@@ -20,9 +20,9 @@ int check_command(const char *input_str, const char *cmd_str){
 
 void print_help(){
     uart_puts("Available commands:\n");
-    uart_puts(" help    - show all commands.\n");
-    uart_puts(" hello   - print Hello world.\n");
-    uart_puts(" info    - print system info.\n");
+    uart_puts("  help   - show all commands.\n");
+    uart_puts("  hello  - print Hello world.\n");
+    uart_puts("  info   - print system info.\n");
 }
 
 void print_hello(){
@@ -31,15 +31,15 @@ void print_hello(){
 
 void print_info(){
     uart_puts("System information:\n");
-    uart_puts(" OpenSBI specification version: ");
+    uart_puts("  OpenSBI specification version: ");
     uart_hex(sbi_get_spec_version());
     uart_puts("\n");
 
-    uart_puts(" implementation ID: ");
+    uart_puts("  implementation ID: ");
     uart_hex(sbi_get_impl_id());
     uart_puts("\n");
 
-    uart_puts(" implementation version: ");
+    uart_puts("  implementation version: ");
     uart_hex(sbi_get_impl_version());
     uart_puts("\n");
 }
