@@ -1,0 +1,34 @@
+/dts-v1/;
+/ {
+    description = "U-boot FIT Image for Orange Pi RV2";
+    #address-cells = <2>; //指定位址使用2個32-bit單元(64位元位址)
+    images {
+        kernel {
+            description = "Kernel Image";
+            data = /incbin/("kernel.bin");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x0 0x00200000>; // 寫給板子看，程式碼load到記憶體的位置
+            //u-boot啟動時會自動將kernel搬移到實體記憶體位址(要確保與linker的起始位址一致)
+            entry = <0x0 0x00200000>; //核心程式碼開始執行的第一條指令位置
+        };
+        fdt {
+            description = "Flat Device Tree";
+            data = /incbin/("x1_orangepi-rv2.dtb");
+            type = "flat_dt";
+            arch = "riscv";
+            compression = "none";
+            load = <0x0 0x31000000>;
+        };
+    };
+    configurations {
+        default = "config-1";
+        config-1 {
+            description = "NYCU OSC RISC-V Bare-metal";
+            kernel = "kernel";
+            fdt = "fdt";
+        };
+    };
+};
