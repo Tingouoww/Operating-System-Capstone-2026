@@ -8,6 +8,12 @@ struct sbiret sbi_ecall(int ext,
                         unsigned long arg3,
                         unsigned long arg4,
                         unsigned long arg5) {
+    /* 
+        ext : extension ID
+        fid : function ID
+        ams volatile("ecall"...) : execute ecall
+        "+r"(a0), "+r"(a1) : input + output. argument before the call and return value after the call
+    */
     struct sbiret ret;
     register unsigned long a0 asm("a0") = (unsigned long)arg0;
     register unsigned long a1 asm("a1") = (unsigned long)arg1;
@@ -17,11 +23,11 @@ struct sbiret sbi_ecall(int ext,
     register unsigned long a5 asm("a5") = (unsigned long)arg5;
     register unsigned long a6 asm("a6") = (unsigned long)fid;
     register unsigned long a7 asm("a7") = (unsigned long)ext;
-    asm volatile("ecall"
-                 : "+r"(a0), "+r"(a1)
+    asm volatile("ecall" 
+                 : "+r"(a0), "+r"(a1) 
                  : "r"(a2), "r"(a3), "r"(a4), "r"(a5), "r"(a6), "r"(a7)
                  : "memory");
-    ret.error = a0;
+    ret.error = a0; 
     ret.value = a1;
     return ret;
 }
