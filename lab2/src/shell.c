@@ -1,6 +1,15 @@
 #include "sbi.h"
 #include "uart.h"
 #include "shell.h"
+#include "bootloader.h"
+#include "cpio.h"
+
+static const char* skip_spaces(const char *s) {
+    while (*s == ' ') {
+        s++;
+    }
+    return s;
+}
 
 void print_shell_prompt(){
     uart_puts("opi-rv2>");
@@ -23,6 +32,9 @@ void print_help(){
     uart_puts("  help   - show all commands.\n");
     uart_puts("  hello  - print Hello world.\n");
     uart_puts("  info   - print system info.\n");
+    uart_puts("  ls   - list files in initramfs.\n");
+    uart_puts("  cat <file> - print file content from initramfs.\n");
+    uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
 }
 
 void print_hello(){
@@ -55,6 +67,23 @@ void run_command(const char *cmd){
     }
     else if(check_command(cmd, "info")){
         print_info();
+    }
+    else if(check_command(cmd, "ls")){
+        initrd_list(NULL);
+    }
+    else if(cmd[0] == 'c' && cmd[1] == 'a' && cmd[2] == 't' &&
+            (cmd[3] == '\0' || cmd[3] == ' ')) {
+        const char *filename = skip_spaces(cmd + 3);
+
+        if (*filename == '\0') {
+            uart_puts("Usage: cat <filename>\n");
+            return;
+        }
+
+        initrd_cat(NULL, filename);
+    }
+    else if(check_command(cmd, "load")){
+        bootloader_load();
     }
     else{
         uart_puts("Unknown command: ");
