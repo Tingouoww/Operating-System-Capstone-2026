@@ -22,6 +22,7 @@
             type = "flat_dt";
             arch = "riscv";
             compression = "none";
+            load = <0x0 0x31000000>;
         };
 
         ramdisk {
