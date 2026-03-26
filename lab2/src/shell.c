@@ -3,12 +3,94 @@
 #include "shell.h"
 #include "bootloader.h"
 #include "cpio.h"
+#include "fdt.h"
+
+#include <stdint.h>
+
+static const void *fdt_base;
+static const void *initrd_base;
+static unsigned long mem_base;
+static unsigned long mem_size;
+
+static inline uint32_t bswap32(uint32_t x) {
+    return ((x & 0x000000ffU) << 24) |
+           ((x & 0x0000ff00U) << 8) |
+           ((x & 0x00ff0000U) >> 8) |
+           ((x & 0xff000000U) >> 24);
+}
 
 static const char* skip_spaces(const char *s) {
     while (*s == ' ') {
         s++;
     }
     return s;
+}
+
+static unsigned long read_be_addr(const void *prop, int len) {
+    const uint32_t *cells = (const uint32_t *)prop;
+
+    if (!prop) {
+        return 0;
+    }
+
+    if (len >= 8) {
+        return ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
+    }
+
+    if (len >= 4) {
+        return bswap32(cells[0]);
+    }
+
+    return 0;
+}
+
+void shell_init(const void *fdt) {
+    int offset;
+
+    fdt_base = fdt;
+    initrd_base = 0;
+    mem_base = 0;
+    mem_size = 0;
+
+    // Read the initrd base address from the DTB /chosen node.
+    offset = fdt_path_offset(fdt, "/chosen");
+    if (offset >= 0) {
+        int start_len = 0;
+        int end_len = 0;
+        const void *start_prop = fdt_getprop(fdt, offset, "linux,initrd-start", &start_len);
+        const void *end_prop = fdt_getprop(fdt, offset, "linux,initrd-end", &end_len);
+        unsigned long initrd_addr = read_be_addr(start_prop, start_len);
+        unsigned long initrd_end = read_be_addr(end_prop, end_len);
+
+        if (initrd_addr != 0) {
+            initrd_base = (const void *)initrd_addr;
+        }
+
+        if (initrd_addr != 0 && initrd_end > initrd_addr) {
+            initrd_init((void *)initrd_addr, (void *)initrd_end);
+        }
+    } else {
+        uart_puts("failed to find /chosen\n");
+    }
+
+    // Read the available memory region from the DTB /memory node.
+    offset = fdt_path_offset(fdt, "/memory");
+    if (offset >= 0) {
+        int len = 0;
+        const void *reg = fdt_getprop(fdt, offset, "reg", &len);
+
+        if (reg) {
+            const uint32_t *cells = (const uint32_t *)reg;
+
+            if (len >= 16) {
+                mem_base = ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
+                mem_size = ((unsigned long)bswap32(cells[2]) << 32) | bswap32(cells[3]);
+            } else if (len >= 8) {
+                mem_base = bswap32(cells[0]);
+                mem_size = bswap32(cells[1]);
+            }
+        }
+    }
 }
 
 void print_shell_prompt(){
