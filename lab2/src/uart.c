@@ -1,5 +1,11 @@
 #include "uart.h"
 
+uintptr_t uart_base;
+
+void uart_init(uintptr_t base) {
+    uart_base = base;
+}
+
 char uart_getc(void) {
     while ((*UART_LSR & LSR_DR) == 0)
         ;

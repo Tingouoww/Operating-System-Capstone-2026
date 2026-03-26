@@ -1,16 +1,18 @@
 #ifndef UART_H
 #define UART_H
 
-#define UART_BASE 0xD4017000UL
-#define UART_LSR  ((unsigned char*)(UART_BASE + 0x14))
-// #define UART_BASE 0x10000000UL
-// #define UART_LSR  ((unsigned char*)(UART_BASE + 0x5))
-#define UART_RBR  ((unsigned char*)(UART_BASE + 0x0))
-#define UART_THR  ((unsigned char*)(UART_BASE + 0x0))
+#include <stdint.h>
+
+extern uintptr_t uart_base;
+
+#define UART_LSR  ((unsigned char*)(uart_base + 0x5))
+#define UART_RBR  ((unsigned char*)(uart_base + 0x0))
+#define UART_THR  ((unsigned char*)(uart_base + 0x0))
 
 #define LSR_DR    (1 << 0)
 #define LSR_TDRQ  (1 << 5)
 
+void uart_init(uintptr_t base);
 char uart_getc(void);
 void uart_putc(char c);
 void uart_puts(const char* s);
