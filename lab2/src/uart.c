@@ -1,9 +1,54 @@
 #include "uart.h"
+#include "fdt.h"
 
 uintptr_t uart_base;
 
-void uart_init(uintptr_t base) {
-    uart_base = base;
+static inline uint32_t bswap32(uint32_t x) {
+    return ((x & 0x000000ffU) << 24) |
+           ((x & 0x0000ff00U) << 8) |
+           ((x & 0x00ff0000U) >> 8) |
+           ((x & 0xff000000U) >> 24);
+}
+
+void uart_init(const void *fdt) {
+    int offset;
+    int len = 0;
+    const void *reg;
+    const uint32_t *cells;
+    unsigned long addr;
+
+#ifdef QEMU
+    offset = fdt_path_offset(fdt, "/soc/uart");
+    if (offset < 0) {
+        offset = fdt_path_offset(fdt, "/soc/serial");
+    }
+#else
+    offset = fdt_path_offset(fdt, "/soc/serial");
+#endif
+
+    if (offset < 0) {
+        uart_puts("uart_init: node not found\n");
+        return;
+    }
+
+    reg = fdt_getprop(fdt, offset, "reg", &len);
+    if (!reg) {
+        uart_puts("uart_init: reg prop not found\n");
+        return;
+    }
+
+    cells = (const uint32_t *)reg;
+    if (len >= 16) {
+        addr = ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
+    } else if (len >= 8) {
+        addr = bswap32(cells[0]);
+    } else {
+        return;
+    }
+
+    if (addr != 0) {
+        uart_base = addr;
+    }
 }
 
 char uart_getc(void) {
