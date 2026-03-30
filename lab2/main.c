@@ -2,8 +2,20 @@
 #include "shell.h"
 #include "uart.h"
 
-void start_kernel(unsigned long hartid, void *dtb) {
+extern char _start;
+
+void start_kernel(unsigned long hartid, void *dtb) { 
+    /* 
+        - hartid (hardware thread ID): the identifier of each hardware thread (core/thread) in RISC-V.
+        - void *dtb : Pointer to the DTB base address (passed in a1 by SBI).
+    */
     uart_init(dtb);
+    uart_puts("[kernel] _start @ ");
+    uart_hex((unsigned long)&_start);
+    uart_puts("\n");
+    uart_puts("[kernel] start_kernel @ ");
+    uart_hex((unsigned long)&start_kernel);
+    uart_puts("\n");
     shell_init(dtb);
     bootloader_init(hartid, dtb);
 
