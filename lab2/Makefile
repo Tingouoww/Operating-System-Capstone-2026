@@ -33,11 +33,11 @@ fit: build
 board: fit
 
 run:
-	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT)
+	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT) CFLAGS="$(CFLAGS) -DQEMU"
 	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -display none -serial stdio
 
 run-pty:
-	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT)
+	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT) CFLAGS="$(CFLAGS) -DQEMU"
 	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -display none -serial pty
 
 qemu-dtb:
