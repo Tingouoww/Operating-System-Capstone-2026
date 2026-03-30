@@ -9,8 +9,6 @@
 
 static const void *fdt_base;
 static const void *initrd_base;
-static unsigned long mem_base;
-static unsigned long mem_size;
 
 static inline uint32_t bswap32(uint32_t x) {
     return ((x & 0x000000ffU) << 24) |
@@ -49,8 +47,6 @@ void shell_init(const void *fdt) {
 
     fdt_base = fdt;
     initrd_base = 0;
-    mem_base = 0;
-    mem_size = 0;
 
     // Read the initrd base address from the DTB /chosen node.
     offset = fdt_path_offset(fdt, "/chosen");
@@ -67,29 +63,11 @@ void shell_init(const void *fdt) {
         }
 
         if (initrd_addr != 0 && initrd_end > initrd_addr) {
+            // 存下 initrd 的記憶體範圍
             initrd_init((void *)initrd_addr, (void *)initrd_end);
         }
     } else {
         uart_puts("failed to find /chosen\n");
-    }
-
-    // Read the available memory region from the DTB /memory node.
-    offset = fdt_path_offset(fdt, "/memory");
-    if (offset >= 0) {
-        int len = 0;
-        const void *reg = fdt_getprop(fdt, offset, "reg", &len);
-
-        if (reg) {
-            const uint32_t *cells = (const uint32_t *)reg;
-
-            if (len >= 16) {
-                mem_base = ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
-                mem_size = ((unsigned long)bswap32(cells[2]) << 32) | bswap32(cells[3]);
-            } else if (len >= 8) {
-                mem_base = bswap32(cells[0]);
-                mem_size = bswap32(cells[1]);
-            }
-        }
     }
 }
 
