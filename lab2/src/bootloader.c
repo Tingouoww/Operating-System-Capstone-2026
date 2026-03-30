@@ -4,6 +4,10 @@
 #define BOOT_MAGIC 0x544f4f42U
 #define MAX_KERNEL_SIZE (16UL * 1024UL * 1024UL)
 
+/* 
+    定義一種函式指標型別
+    kernel_entry_t 指向一個 function
+*/
 typedef void (*kernel_entry_t)(unsigned long hartid, void *dtb);
 
 static unsigned long boot_hartid;
@@ -11,7 +15,9 @@ static void *boot_dtb;
 
 static uint32_t uart_get_u32_le(void) {
     uint32_t value = 0;
+    /* 從 UART 連續讀 4 個 byte，組成一個 little-endian 的 uint32_t */
 
+    // uart_getc 會等待資料(等待UART資料流送 bytes)
     value |= (uint32_t)(unsigned char)uart_getc();
     value |= (uint32_t)(unsigned char)uart_getc() << 8;
     value |= (uint32_t)(unsigned char)uart_getc() << 16;
@@ -35,7 +41,6 @@ void bootloader_load(void) {
     uart_puts("Waiting for kernel payload header...\n");
     uart_puts("Send an image linked for ");
     uart_hex(KERNEL_LOAD_ADDR);
-    uart_puts(" (for QEMU use kernel_payload.bin).\n");
 
     magic = uart_get_u32_le();
     if (magic != BOOT_MAGIC) {
@@ -65,6 +70,11 @@ void bootloader_load(void) {
     asm volatile("fence iorw, iorw" ::: "memory");
     asm volatile("fence.i" ::: "memory");
 
+    /* 
+        kernel entry 是 function pointer
+        把「記憶體位址 load_addr」當成「可呼叫的 kernel 入口函式」來呼叫
+        (「函式指標被呼叫」這件事本身就代表跳到該位址執行)
+    */
     kernel_entry = (kernel_entry_t)load_addr;
     kernel_entry(boot_hartid, boot_dtb);
 }
