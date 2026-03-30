@@ -70,6 +70,7 @@ void initrd_list(const void* rd) { // rd: ramdisk/initrd
     unsigned int count = 0;
 
     while ((const void *)cpio < initrd_end && str_ncmp(cpio->c_magic, "070701", 6) == 0) {
+        // magic = "070701" -> 表示 New ASCII Format
         int filesize = hextoi(cpio->c_filesize, sizeof(cpio->c_filesize));
         int namesize = hextoi(cpio->c_namesize, sizeof(cpio->c_namesize));
         const char* name = (const char*) (cpio + 1);

@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 struct cpio_newc_header {
+    // 8-byte hexadecimal fields
     char c_magic[6];
     char c_ino[8];
     char c_mode[8];

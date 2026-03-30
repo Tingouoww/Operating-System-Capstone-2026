@@ -3,6 +3,7 @@
 
 uintptr_t uart_base;
 
+/* Convert a 32-bit big-endian value to CPU endianness */
 static inline uint32_t bswap32(uint32_t x) {
     return ((x & 0x000000ffU) << 24) |
            ((x & 0x0000ff00U) << 8) |
@@ -39,9 +40,10 @@ void uart_init(const void *fdt) {
 
     cells = (const uint32_t *)reg;
     if (len >= 16) {
+        // >= 4 cells (2 address + 2 size)
         addr = ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
     } else if (len >= 8) {
-        addr = bswap32(cells[0]);
+        addr = bswap32(cells[0]); 
     } else {
         return;
     }
