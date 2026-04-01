@@ -1,15 +1,15 @@
 # Lab 2: Booting
 
-## 1. Objective 
-Implement a bootloader that supports UART-based image transfer, and build the program/data/hardware context required for OS boot by parsing a CPIO filesystem and a Device Tree.
+## 1. Objective
+This lab builds a RISC-V bootloader/kernel runtime that initializes UART from DTB, provides an interactive shell, parses Flatten Device Tree (FDT) and CPIO `newc` initramfs data, receives a kernel image over UART and transfers control to it, and performs bootloader self-relocation before entering the C runtime.
 
 ## 2. Implemented Scope
 - [x] Implement a bootloader that loads kernel images through UART.
-- [x] Parsing the flatten devicetree and provide an interface to query the devicetree for device information
-- [x] implement a parser to read files in the archive
-- [ ] Bootloader Self-Relocation
+- [x] Parse the Flatten Device Tree and provide interfaces to query device information.
+- [x] Implement a parser to read files in the CPIO archive.
+- [x] Bootloader self-relocation.
 
-## 3. Project Folder Structure
+## 3. Project Layout
 ```text
 lab2/
 ├── docs/
@@ -22,7 +22,6 @@ lab2/
 │   ├── shell.h
 │   ├── string.h
 │   └── uart.h
-├── rootfs/
 ├── src/
 │   ├── bootloader.c
 │   ├── cpio.c
@@ -42,166 +41,152 @@ lab2/
 ├── linker_qemu_payload.ld
 ├── kernel.its
 ├── initramfs.cpio
-├── x1_orangepi-rv2.dtb
-├── x1_orangepi-rv2.dts
 └── README.md
 ```
 
 ## 4. Boot Flow
 ```text
-    [Boot Firmware / SBI]
-        │
-        │ Set a0 = hartid (usually 0), a1 = dtb
-        ▼
-    [_start in start.S]
-        │
-        ├─ Clear .bss section (__bss_start ~ __bss_stop)
-        ├─ sp = _end
-        └─ tail start_kernel   (pass a0/a1 through unchanged)
-                │
-                ▼
-    [start_kernel(hartid, dtb) in main.c]
-        │
-        ├─ uart_init(dtb)
-        ├─ shell_init(dtb)
-        ├─ bootloader_init(hartid, dtb)
-        ├─ print_shell_prompt()
-        └─ while(1) read UART input + execute commands
+[Boot Firmware / OpenSBI]
+    │
+    │ a0 = hartid, a1 = dtb
+    ▼
+[_start in start.S]
+    │
+    ├─ copy image [_start, __image_end) to RELOC_BASE
+    │    - board: 0x20000000
+    │    - qemu : 0x80A00000
+    ├─ jump to relocated_entry at relocated address
+    ├─ clear .bss
+    ├─ set sp = _end
+    └─ tail start_kernel(hartid, dtb)
+            │
+            ▼
+[start_kernel in main.c]
+    │
+    ├─ uart_init(dtb)
+    ├─ shell_init(dtb)
+    ├─ bootloader_init(hartid, dtb)
+    │    - relocation safety check
+    └─ command loop (UART)
 ```
 
-## 5. UART Bootloader
-### 5.1. Goal
-Implement a bootloader that receives a kernel image over UART and writes it to a target memory address.
-### 5.2. Host-side Loader: `tools/send_kernel.py`
-  
-The transfer protocol is **fixed header + payload**:
-    1. Read the kernel image
-        - Read `kernel.bin` in binary mode
-        - Get the image size
-    2. Pack the header
-        - Use `struct.pack("<II", BOOT_MAGIC, image_size)` to build an 8-byte header
-        - `BOOT_MAGIC = 0x544F4F42` (little-endian bytes correspond to the string `"BOOT"`).
-        - `"<II"` means two 32-bit unsigned integers in little-endian order.
-    3. Configure UART to raw mode
-        - Disable echo, canonical mode, software flow control, output post-processing, etc., so data is sent as a raw byte stream without terminal-layer modification.
-    4. Transmission order
-        - first: Header
-        - second: kernel payload
-        - Use `tcdrain()` to wait for UART transmission to complete before exit.
-    5. Cleanup protection
-        - Restore the original terminal attributes before exiting to avoid affecting later terminal usage.
+## 5. Shell Commands
+- `help`: print command list
+- `hello`: print hello message
+- `info`: print SBI implementation/spec info
+- `ls`: list file names from initramfs (`cpio newc`)
+- `cat <file>`: print file content from initramfs
+- `load`: receive image via UART and jump to `KERNEL_LOAD_ADDR`
 
-### 5.3. Bootloader-side Expected Behavior
+## 6. UART Load Protocol
+### 6.1 Format
+Host sends:
+1. 4 bytes magic (`0x544F4F42`, little-endian, string "BOOT")
+2. 4 bytes payload size (little-endian)
+3. raw payload bytes
 
-The bootloader must follow the same protocol:
-- Receive the 8-byte header first.
-- Validate `BOOT_MAGIC`.
-- Read `image_size` and verify it is legal (current implementation: `size > 0` and `size <= 16MB`).
-- Receive exactly `image_size` bytes into the kernel load address.
-- Jump to the kernel entry after transfer completes.
+`tools/send_kernel.py` already implements this format.
 
-### Command Example
-- Orange Pi
-    ```bash
-    sudo python3 tools/send_kernel.py /dev/ttyUSB0 kernel.bin
-    ```
-- QEMU
-    1. 
-    ```bash
-    make run-pty
-    ```
-    2. Open another terminal (assume PTY is `/dev/pts/<n>`)
-    ```
-    sudo screen /dev/pts/<n> 115200
-    ```
-    3. 
-    ```bash
-    python3 tools/send_kernel.py /dev/pts/<n> kernel.bin
-    ```
----
-## 6. Flatten Device Tree (FDT) Parser
+### 6.2 Bootloader Behavior (`bootloader_load`)
+- wait for header
+- verify magic
+- verify `size` (`0 < size <= 16 MiB`)
+- verify target range safety
+- receive payload into `KERNEL_LOAD_ADDR`
+- execute `fence.i`
+- jump to loaded entry with `(hartid, dtb)`
 
-### 6.1 Goal
-Parse the DTB passed at boot so the system can retrieve hardware information (for example UART and initramfs locations).
+### 6.3 Core Functions
+- `bootloader_init(hartid, dtb)`: Stores boot context and runs relocation safety checks before `load` is allowed.
+- `bootloader_load()`: Receives image data from UART, validates protocol fields, and jumps to the loaded entry.
+- `kernel_load_range_is_safe(size)`: Checks that the target load range does not overlap relocated bootloader, DTB, or initramfs.
+- `bootloader_reloc_range_is_safe()`: Verifies the relocation destination is valid against memory/DTB/initramfs ranges from DTB.
 
-### 6.2 Code Walkthrough
-1. `start_kernel(hartid, dtb)` in `main.c`
-   - At boot, SBI places `hartid` and the `dtb` pointer in `a0/a1`; these become the function parameters in `start_kernel`.
+## 7. Self-Relocation and Safety Checks
+### 7.1 Self-Relocation (`start.S`)
+- relocation runs before clearing `.bss` and before entering C runtime
+- copy range is `[_start, __image_end)`
+- execution continues at relocated `relocated_entry`
 
-2. Validate FDT header
-   - Check `magic == 0xd00dfeed` in `fdt_path_offset()` to avoid parsing an invalid DTB.
+### 7.2 Relocation Safety (`bootloader_init`)
+Bootloader checks relocation range against DTB-derived ranges:
+- `/memory` range (must be inside)
+- DTB occupied range (must not overlap)
+- initramfs range from `/chosen` (must not overlap)
 
-3. `fdt_path_offset(fdt, path)` in `src/fdt.c`
-   - Find the target node offset by path (for example `/chosen`, `/soc/serial...`).
+### 7.3 Kernel Load Safety (`bootloader_load`)
+Before receiving payload, bootloader checks target load range against:
+- relocated bootloader range
+- DTB range
+- initramfs range
 
-4. `fdt_getprop(fdt, nodeoffset, name, len)` in `src/fdt.c`
-   - Read a property value and length from the specified node.
+If any overlap/invalid range is detected, loading is rejected.
 
-5. Actual usage
-   - Other modules use these query interfaces to fetch hardware parameters and complete initialization.
----
-## 7. Part C - Archive Parser (CPIO newc)
+## 8. FDT Parser
+Implemented interfaces:
+- `fdt_path_offset(fdt, path)`
+- `fdt_getprop(fdt, nodeoffset, name, lenp)`
+- `fdt_get_memory_range(fdt, &base, &size)`
+- `fdt_get_initrd_range(fdt, &start, &end)`
 
-### Goal
-Parse initramfs (`cpio newc`) and provide `ls` and `cat` functionality.
+Used by:
+- UART initialization
+- initrd discovery from `/chosen`
+- relocation/load safety checks
 
-### Key Functions
-- `initrd_init(start, end)`  
-  Record the initramfs memory range.
-- `hextoi(s, n)`  
-  Convert ASCII-hex fields in the header to integers (for example `c_filesize`, `c_namesize`).
-- `align(n, 4)`  
-  Handle 4-byte alignment in `newc`.
-- `initrd_list(rd)`  
-  Scan the archive entry-by-entry and print file names (stop at `TRAILER!!!`).
-- `initrd_cat(rd, filename)`  
-  Match file names entry-by-entry; print file content if found, otherwise report `No such file`.
+Core functions:
+- `fdt_path_offset(fdt, path)`: Finds a node offset by absolute DT path (for example `/chosen` or `/memory`).
+- `fdt_getprop(fdt, nodeoffset, name, lenp)`: Returns a property pointer and length from a specific node.
+- `fdt_get_memory_range(fdt, &base, &size)`: Parses the `/memory` `reg` property into usable base/size values.
+- `fdt_get_initrd_range(fdt, &start, &end)`: Reads `linux,initrd-start/end` from `/chosen`.
 
-### Shell Integration
-- `ls` -> `initrd_list(NULL)`
-- `cat <file>` -> `initrd_cat(NULL, filename)`
+## 9. CPIO Parser
+Implemented features (`newc` format):
+- parse archive headers and alignment
+- iterate entries until `TRAILER!!!`
+- list file names (`ls`)
+- print file content (`cat <file>`)
 
----
+Core functions:
+- `initrd_init(start, end)`: Records the in-memory initramfs range for later archive traversal.
+- `initrd_list(rd)`: Iterates through archive entries and prints file names.
+- `initrd_cat(rd, filename)`: Searches for a target file in the archive and prints its content.
+- `hextoi(s, n)`: Converts ASCII hex fields in CPIO headers into integer values.
 
-## 8. Makefile Usage
+## 10. Build and Run
+### 10.1 Common targets
+- `make build`: build `kernel.elf` / `kernel.bin` (default `linker.ld`)
+- `make build-payload`: build `kernel_payload.elf` / `kernel_payload.bin`
+- `make run`: QEMU run with `-serial stdio`
+- `make run-pty`: QEMU run with `-serial pty`
+- `make fit`: build FIT image (`kernel.fit`)
+- `make board`: alias of `make fit`
+- `make qemu-dtb`: dump `qemu.dtb`
+- `make qemu-dts`: generate readable `qemu.dts`
+- `make clean`: remove build artifacts
 
-### 8.1 Targets
-- `make build`  
-  Build and generate `kernel.elf` and `kernel.bin` (use `linker.ld`, or override with `LINKER_SCRIPT`).
-- `make build-payload`  
-  Generate `kernel_payload.elf` and `kernel_payload.bin` (use `linker_qemu_payload.ld`).
-- `make run`  
-  Run the kernel on QEMU with serial on `stdio`.
-- `make run-pty`  
-  Run the kernel on QEMU with serial on `pty` (useful with `send_kernel.py`).
-- `make qemu-dtb`  
-  Export `qemu.dtb`.
-- `make qemu-dts`  
-  Convert `qemu.dtb` into readable `qemu.dts`.
-- `make clean`  
-  Clean build artifacts.
-
-### 8.2 Why Multiple Linker Scripts
-This project has two dimensions:
-1. Runtime environment: Board / QEMU
-2. Image role: main kernel / dynamically loaded payload
-
-So different link addresses are required to avoid overlap:
-- `linker.ld`: Board main kernel (`0x00200000`)
-- `linker_qemu.ld`: QEMU main kernel (`0x80200000`)
-- `linker_payload.ld`: Board payload (`0x20000000`)
-- `linker_qemu_payload.ld`: QEMU payload (`0x82000000`)
-
-### 8.3 Payload Purpose
-`payload` is a second-stage image received by the `load` command over UART, written to a target address, then executed by jumping to it.  
-Its purpose is to validate the full bootloader handoff path: **receive -> load -> transfer control**.
-
-### 8.4 Command Examples
+### 10.2 QEMU workflow with UART sender
+1. Start target in PTY mode:
 ```bash
-make build
-make run
 make run-pty
-make build-payload
-make qemu-dts
-make clean
 ```
+2. Note the generated PTY path from QEMU output (example: `/dev/pts/5`).
+3. Send image from another terminal:
+```bash
+python3 tools/send_kernel.py /dev/pts/5 kernel_payload.bin
+```
+
+### 10.3 Board example
+```bash
+sudo python3 tools/send_kernel.py /dev/ttyUSB0 kernel_payload.bin
+```
+
+## 11. Address Notes
+- `KERNEL_LOAD_ADDR` is selected in `include/bootloader.h`:
+  - QEMU build (`-DQEMU`): `0x80200000`
+  - board build: `0x00200000`
+- relocation base is selected in `start.S` / `src/bootloader.c`:
+  - QEMU build (`-DQEMU`): `0x80A00000`
+  - board build: `0x20000000`
+
+These values are validated at runtime by safety checks before accepting `load`.
