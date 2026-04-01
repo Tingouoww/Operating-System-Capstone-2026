@@ -1,5 +1,6 @@
 #include "fdt.h"
 #include "string.h"
+#include "uart.h"
 #include <stddef.h>
 
 static inline uint32_t bswap32(uint32_t x) {
@@ -12,6 +13,72 @@ static inline uint32_t bswap32(uint32_t x) {
 
 static inline const void* align_up(const void* ptr, size_t align) {
     return (const void*)(((uintptr_t)ptr + align - 1) & ~(align - 1));
+}
+
+static unsigned long read_be_cells(const uint32_t* cells, int count) {
+    /* 讀 big-endian */
+    unsigned long value = 0;
+    int i;
+
+    for (i = 0; i < count; i++) {
+        value = (value << 32) | (unsigned long)bswap32(cells[i]);
+    }
+
+    return value;
+}
+
+static int read_be_prop_addr(const void *prop, int len, unsigned long *out) {
+    const uint32_t *cells = (const uint32_t *)prop;
+    
+    if (!prop || !out) {
+        return -1;
+    }
+
+    if (len >= 8) {
+        *out = ((unsigned long)bswap32(cells[0]) << 32) | (unsigned long)bswap32(cells[1]);
+        return 0;
+    }
+
+    if (len >= 4) {
+        *out = (unsigned long)bswap32(cells[0]);
+        return 0;
+    }
+    return -1;
+}
+
+static int get_root_cells(const void* fdt, int* address_cells, int* size_cells) {
+    int root;
+    int len = 0;
+    const void* prop;
+
+    if (!fdt || !address_cells || !size_cells) {
+        return -1;
+    }
+
+    root = fdt_path_offset(fdt, "/");
+    if (root < 0) {
+        return -1;
+    }
+
+    *address_cells = 2; // 位址用 2 個 32 bits 表示
+    *size_cells = 2; // 大小用 2 個 32 bits 表示
+
+    prop = fdt_getprop(fdt, root, "#address-cells", &len);
+    if (prop && len >= 4) {
+        *address_cells = (int)bswap32(*(const uint32_t*)prop);
+    }
+
+    prop = fdt_getprop(fdt, root, "#size-cells", &len);
+    if (prop && len >= 4) {
+        *size_cells = (int)bswap32(*(const uint32_t*)prop);
+    }
+
+    if (*address_cells <= 0 || *address_cells > 2 ||
+        *size_cells <= 0 || *size_cells > 2) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static int node_name_matches(const char* node_name, const char* path_part) {
@@ -216,4 +283,75 @@ const void* fdt_getprop(const void* fdt, int nodeoffset, const char* name, int* 
         }
     }
     return NULL;
+}
+
+int fdt_get_memory_range(const void* fdt, unsigned long* base, unsigned long* size) {
+    int memory_offset;
+    int reg_len = 0;
+    int address_cells = 0;
+    int size_cells = 0;
+    int tuple_cells;
+    const uint32_t* reg;
+
+    if (!fdt || !base || !size) {
+        return -1;
+    }
+
+    if (get_root_cells(fdt, &address_cells, &size_cells) < 0) {
+        return -1;
+    }
+
+    memory_offset = fdt_path_offset(fdt, "/memory");
+    if (memory_offset < 0) {
+        return -1;
+    }
+
+    reg = (const uint32_t*)fdt_getprop(fdt, memory_offset, "reg", &reg_len);
+    tuple_cells = address_cells + size_cells;
+    if (!reg || reg_len < tuple_cells * 4) {
+        return -1;
+    }
+
+    *base = read_be_cells(reg, address_cells);
+    *size = read_be_cells(reg + address_cells, size_cells);
+
+    if (*size == 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int fdt_get_initrd_range(const void* fdt, unsigned long* start, unsigned long* end) {
+    int chosen_offset;
+    int start_len = 0;
+    int end_len = 0;
+    const void* start_prop;
+    const void* end_prop;
+
+    if (!fdt || !start || !end) {
+        return -1;
+    }
+
+    chosen_offset = fdt_path_offset(fdt, "/chosen");
+    if (chosen_offset < 0) {
+        return -1;
+    }
+
+    start_prop = (const uint32_t*)fdt_getprop(fdt, chosen_offset, "linux,initrd-start", &start_len);
+    end_prop = (const uint32_t*)fdt_getprop(fdt, chosen_offset, "linux,initrd-end", &end_len);
+    if (!start_prop || !end_prop) {
+        return -1;
+    }
+
+    if (read_be_prop_addr(start_prop, start_len, start) < 0 ||
+        read_be_prop_addr(end_prop, end_len, end) < 0) {
+        return -1;
+    }
+
+    if (*start == 0 || *end <= *start) {
+        return -1;
+    }
+
+    return 0;
 }

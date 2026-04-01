@@ -17,13 +17,6 @@ static inline uint32_t bswap32(uint32_t x) {
            ((x & 0xff000000U) >> 24);
 }
 
-static const char* skip_spaces(const char *s) {
-    while (*s == ' ') {
-        s++;
-    }
-    return s;
-}
-
 static unsigned long read_be_addr(const void *prop, int len) {
     const uint32_t *cells = (const uint32_t *)prop;
 
@@ -32,42 +25,55 @@ static unsigned long read_be_addr(const void *prop, int len) {
     }
 
     if (len >= 8) {
-        return ((unsigned long)bswap32(cells[0]) << 32) | bswap32(cells[1]);
+        return ((unsigned long)bswap32(cells[0]) << 32) | (unsigned long)bswap32(cells[1]);
     }
 
     if (len >= 4) {
-        return bswap32(cells[0]);
+        return (unsigned long)bswap32(cells[0]);
     }
 
     return 0;
 }
 
+static const char* skip_spaces(const char *s) {
+    while (*s == ' ') {
+        s++;
+    }
+    return s;
+}
+
 void shell_init(const void *fdt) {
     int offset;
+    unsigned long initrd_start = 0;
+    unsigned long initrd_end = 0;
+    int start_len = 0;
+    int end_len = 0;
+    const void *start_prop;
+    const void *end_prop;
 
     fdt_base = fdt;
     initrd_base = 0;
 
     // Read the initrd base address from the DTB /chosen node.
     offset = fdt_path_offset(fdt, "/chosen");
-    if (offset >= 0) {
-        int start_len = 0;
-        int end_len = 0;
-        const void *start_prop = fdt_getprop(fdt, offset, "linux,initrd-start", &start_len);
-        const void *end_prop = fdt_getprop(fdt, offset, "linux,initrd-end", &end_len);
-        unsigned long initrd_addr = read_be_addr(start_prop, start_len);
-        unsigned long initrd_end = read_be_addr(end_prop, end_len);
-
-        if (initrd_addr != 0) {
-            initrd_base = (const void *)initrd_addr;
-        }
-
-        if (initrd_addr != 0 && initrd_end > initrd_addr) {
-            // 存下 initrd 的記憶體範圍
-            initrd_init((void *)initrd_addr, (void *)initrd_end);
-        }
-    } else {
+    if (offset < 0) {
         uart_puts("failed to find /chosen\n");
+        return;
+    }
+
+    start_prop = fdt_getprop(fdt, offset, "linux,initrd-start", &start_len);
+    end_prop = fdt_getprop(fdt, offset, "linux,initrd-end", &end_len);
+    initrd_start = read_be_addr(start_prop, start_len);
+    initrd_end = read_be_addr(end_prop, end_len);
+
+    if (initrd_start != 0) {
+        initrd_base = (const void *)initrd_start;
+    }
+
+    if (initrd_start != 0 && initrd_end > initrd_start) {
+        initrd_init((void *)initrd_start, (void *)initrd_end);
+    } else {
+        uart_puts("initrd range not found in /chosen\n");
     }
 }
 

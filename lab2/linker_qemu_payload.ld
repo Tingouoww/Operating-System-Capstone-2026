@@ -2,11 +2,12 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS
 {
-    . = 0x82000000;
+    . = 0x80200000;
     _start = .;
     .text : { *(.text.boot) *(.text) }
     .rodata : { *(.rodata) }
     .data : { *(.data) }
+    __image_end = .;
     .bss : {
         __bss_start = .;
         *(.sbss) *(.bss)

@@ -5,8 +5,11 @@
 #include <stdint.h>
 
 #ifndef KERNEL_LOAD_ADDR
-#define KERNEL_LOAD_ADDR 0x20000000UL
-// #define KERNEL_LOAD_ADDR 0x82000000UL
+#ifdef QEMU
+#define KERNEL_LOAD_ADDR 0x80200000UL
+#else
+#define KERNEL_LOAD_ADDR 0x00200000UL
+#endif
 #endif
 
 void bootloader_init(unsigned long hartid, void *dtb);

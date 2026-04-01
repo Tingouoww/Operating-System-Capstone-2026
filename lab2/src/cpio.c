@@ -134,7 +134,7 @@ void initrd_cat(const void* rd, const char* filename) {
             for (i = 0; i < filesize; i++) {
                 uart_putc(data[i]);
             }
-            uart_puts("\n");
+            uart_putc('\n');
             return;
         }
 

@@ -7,6 +7,7 @@ SECTIONS
     .text : { *(.text.boot) *(.text) }
     .rodata : { *(.rodata) }
     .data : { *(.data) }
+    __image_end = .;
     .bss : {
         __bss_start = .;
         *(.sbss) *(.bss)

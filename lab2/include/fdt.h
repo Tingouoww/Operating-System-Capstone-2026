@@ -24,4 +24,6 @@ struct fdt_header {
 int str_parser(const char** path, char *output);
 int fdt_path_offset(const void* fdt, const char* path);
 const void* fdt_getprop(const void* fdt, int nodeoffset, const char* name, int* lenp);
+int fdt_get_memory_range(const void* fdt, unsigned long* base, unsigned long* size);
+int fdt_get_initrd_range(const void* fdt, unsigned long* start, unsigned long* end);
 #endif
