@@ -6,6 +6,7 @@ ARCHFLAGS = -march=rv64gc_zicsr_zifencei -mabi=lp64
 CFLAGS = $(ARCHFLAGS) -mcmodel=medany -ffreestanding -nostdlib -g -Wall -Iinclude
 MKIMAGE ?= mkimage
 LINKER_SCRIPT ?= linker.ld
+PAYLOAD_LINKER_SCRIPT ?= linker_payload.ld
 QEMU_LINKER_SCRIPT ?= linker_qemu.ld
 QEMU_PAYLOAD_LINKER_SCRIPT ?= linker_qemu_payload.ld
 LDFLAGS = -T $(LINKER_SCRIPT)
@@ -24,7 +25,7 @@ build:
 
 build-payload:
 	$(CC) $(CFLAGS) -c $(SRCS)
-	$(LD) -T $(QEMU_PAYLOAD_LINKER_SCRIPT) -o $(PAYLOAD).elf $(OBJS)
+	$(LD) -T $(PAYLOAD_LINKER_SCRIPT) -o $(PAYLOAD).elf $(OBJS)
 	$(OBJCOPY) -O binary $(PAYLOAD).elf $(PAYLOAD).bin
 
 fit: build
@@ -33,6 +34,7 @@ fit: build
 board: fit
 
 run:
+# -DQEMU 是編譯器參數(在預處理階段定義一個巨集 QEMU)
 	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT) CFLAGS="$(CFLAGS) -DQEMU"
 	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -display none -serial stdio
 
