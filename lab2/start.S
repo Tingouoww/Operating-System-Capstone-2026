@@ -40,6 +40,7 @@ copy_done:
     add t0, t0, t1
     jr t0
 
+# la t0, __bss_start / la t1, __bss_stop 在 medany 下是 PC-relative 取址
 relocated_entry:
     la t0, __bss_start
     la t1, __bss_stop
