@@ -1,0 +1,49 @@
+/dts-v1/;
+
+/ {
+    description = "OrangePi RV2 kernel with initramfs";
+    #address-cells = <2>;
+
+    images {
+        kernel {
+            description = "kernel";
+            data = /incbin/("kernel.bin");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x0 0x00200000>;
+            entry = <0x0 0x00200000>;
+        };
+
+        fdt {
+            description = "x1_orangepi-rv2";
+            data = /incbin/("x1_orangepi-rv2.dtb");
+            type = "flat_dt";
+            arch = "riscv";
+            compression = "none";
+            load = <0x0 0x31000000>;
+        };
+
+        ramdisk {
+            description = "initramfs";
+            data = /incbin/("initramfs.cpio");
+            type = "ramdisk";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x0 0x46100000>;
+        };
+    };
+
+    configurations {
+        default = "conf";
+
+        conf {
+            description = "x1_orangepi-rv2";
+            kernel = "kernel";
+            fdt = "fdt";
+            ramdisk = "ramdisk";
+        };
+    };
+};
