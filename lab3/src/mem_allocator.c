@@ -3,8 +3,44 @@
 #include "string.h"
 #include "uart.h"
 
+/* page frame 變成 chunk pool 後，不管這些 chunk 有無被用到，pool 都會留著*/
+
 static struct buddy_allocator buddy_allocator;
 static struct frame frame_array[BUDDY_MAX_PAGES];
+struct chunk
+{
+    struct chunk *next;
+};
+
+struct chunk_pool
+{
+    unsigned int chunk_size; // chunk pool 裡面每一個 chunk 的大小
+    struct chunk *free_list; // 指向該 pool 目前可用 chunk 的 linked list 開頭
+};
+
+struct page_pool_meta
+{
+    int pool_index;
+};
+
+#define SMALL_POOL_COUNT 13
+
+static struct chunk_pool chunk_pools[SMALL_POOL_COUNT] = {
+    {16, NULL},
+    {32, NULL},
+    {48, NULL},
+    {64, NULL},
+    {96, NULL},
+    {128, NULL},
+    {192, NULL},
+    {256, NULL},
+    {384, NULL},
+    {512, NULL},
+    {768, NULL},
+    {1024, NULL},
+    {2048, NULL},
+};
+static struct page_pool_meta pool_page_meta[BUDDY_MAX_PAGES];
 static int buddy_ready;
 
 /* 回傳某個 order 的 block 會包含幾個 page。 */
@@ -46,28 +82,173 @@ static unsigned long addr_to_frame_idx(struct buddy_allocator *buddy, unsigned l
     return (addr - buddy->base_addr) / PAGE_SIZE;
 }
 
+/* 將任意位址對齊回所屬 page 的起始位址。 */
+static unsigned long addr_to_page_base(unsigned long addr)
+{
+    return addr & ~(PAGE_SIZE - 1);
+}
+
 /* 根據 buddy XOR 規則，算出同 order 另一半 block 的 head index。 */
 static unsigned long get_buddy_idx(unsigned long idx, unsigned int order)
 {
     return idx ^ block_pages(order);
 }
 
-/* 輸出 block 的 page 範圍與 order，方便追 allocator 的狀態變化。 */
-static void log_range(const char *prefix, unsigned long idx, unsigned int order)
+/* 輸出 block 的 page 範圍，方便 demo 時解釋 block 邊界。 */
+static void log_block_range(unsigned long idx, unsigned int order)
 {
-    unsigned long start = frame_idx_to_addr(&buddy_allocator, idx);
-    unsigned long end = start + block_pages(order) * PAGE_SIZE;
+    uart_puts("Range of pages: [");
+    uart_dec(idx);
+    uart_puts(", ");
+    uart_dec(idx + block_pages(order) - 1);
+    uart_puts("]");
+}
 
-    uart_puts(prefix);
+static void log_free_area_add(unsigned long idx, unsigned int order)
+{
+    uart_puts("[+] Add");
     uart_puts(" page ");
     uart_dec(idx);
-    uart_puts(" order ");
+    uart_puts(" to order ");
     uart_dec(order);
-    uart_puts(" addr [");
-    uart_hex(start);
-    uart_puts(", ");
-    uart_hex(end);
-    uart_puts(")\n");
+    uart_puts(". ");
+    log_block_range(idx, order);
+    uart_puts("\n");
+}
+
+static void log_free_area_remove(unsigned long idx, unsigned int order)
+{
+    uart_puts("[-] Remove");
+    uart_puts(" page ");
+    uart_dec(idx);
+    uart_puts(" from order ");
+    uart_dec(order);
+    uart_puts(". ");
+    log_block_range(idx, order);
+    uart_puts("\n");
+}
+
+static void log_next_page_addr(unsigned int order)
+{
+    struct frame *next_frame;
+
+    if (list_empty(&buddy_allocator.free_area[order]))
+    {
+        uart_puts("none");
+        return;
+    }
+
+    next_frame = list_first_entry(&buddy_allocator.free_area[order],
+                                  struct frame,
+                                  free_list);
+    uart_hex(frame_idx_to_addr(&buddy_allocator,
+                               (unsigned long)(next_frame - buddy_allocator.frames)));
+}
+
+static void log_page_alloc_event(unsigned long idx, unsigned int order)
+{
+    uart_puts("[Page] Allocate ");
+    uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
+    uart_puts(" at order ");
+    uart_dec(order);
+    uart_puts(", page ");
+    uart_dec(idx);
+    uart_puts(". Next address at order ");
+    uart_dec(order);
+    uart_puts(": ");
+    log_next_page_addr(order);
+    uart_puts("\n");
+}
+
+static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
+{
+    uart_puts("[Page] Free ");
+    uart_hex(addr);
+    uart_puts(" and add back to order ");
+    uart_dec(order);
+    uart_puts(", page ");
+    uart_dec(idx);
+    uart_puts(". Next address at order ");
+    uart_dec(order);
+    uart_puts(": ");
+    log_next_page_addr(order);
+    uart_puts("\n");
+}
+
+static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order)
+{
+    uart_puts("[*] Buddy found! buddy idx: ");
+    uart_dec(buddy_idx);
+    uart_puts(" for page ");
+    uart_dec(idx);
+    uart_puts(" with order ");
+    uart_dec(order);
+    uart_puts("\n");
+}
+
+static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
+{
+    uart_puts("[Chunk] ");
+    uart_puts(action);
+    uart_puts(" ");
+    uart_hex((unsigned long)ptr);
+    uart_puts(" at chunk size ");
+    uart_dec(chunk_size);
+    uart_puts("\n");
+}
+
+static void log_pool_grow_event(unsigned long page_idx,
+                                unsigned long page_addr,
+                                unsigned int chunk_size,
+                                unsigned int chunk_count)
+{
+    uart_puts("[Chunk] Grow pool size ");
+    uart_dec(chunk_size);
+    uart_puts(" with page ");
+    uart_dec(page_idx);
+    uart_puts(" at ");
+    uart_hex(page_addr);
+    uart_puts(". Total chunks: ");
+    uart_dec(chunk_count);
+    uart_puts("\n");
+}
+
+static unsigned int free_area_count(struct list_head *head)
+{
+    unsigned int count = 0;
+    struct list_head *node = head->next;
+
+    while (node != head)
+    {
+        count++;
+        node = node->next;
+    }
+
+    return count;
+}
+
+static void log_free_list_state(const char *action)
+{
+    unsigned int order;
+
+    uart_puts("[Buddy] Free list blocks after ");
+    uart_puts(action);
+    uart_puts(": ");
+
+    for (order = 0; order <= MAX_ORDER; order++)
+    {
+        if (order > 0)
+        {
+            uart_puts(", ");
+        }
+
+        uart_puts("order ");
+        uart_dec(order);
+        uart_puts(" = ");
+        uart_dec(free_area_count(&buddy_allocator.free_area[order]));
+    }
+
+    uart_puts("\n");
 }
 
 /* 把單一 frame metadata 清成未使用狀態。 */
@@ -117,7 +298,7 @@ static void free_area_add(struct buddy_allocator *buddy, unsigned long idx, unsi
 
     mark_block(buddy, idx, order, 1);
     list_add_tail(&frame->free_list, &buddy->free_area[order]);
-    log_range("[+] Add", idx, order);
+    log_free_area_add(idx, order);
 }
 
 /*
@@ -129,12 +310,14 @@ static void free_area_remove(struct frame *frame, unsigned long idx, unsigned in
     list_del(&frame->free_list);
     INIT_LIST_HEAD(&frame->free_list);
     frame->is_free = 0;
-    log_range("[-] Remove", idx, order);
+    log_free_area_remove(idx, order);
 }
 
 /* 第一次使用 allocator 時才做全域初始化，避免開機流程太早碰 allocator。 */
 static void buddy_lazy_init(void)
 {
+    unsigned long idx;
+
     if (buddy_ready)
     {
         return;
@@ -144,7 +327,133 @@ static void buddy_lazy_init(void)
                BUDDY_MEM_BASE_ADDR,
                BUDDY_MEM_SIZE,
                frame_array);
+
+    for (idx = 0; idx < BUDDY_MAX_PAGES; idx++)
+    {
+        pool_page_meta[idx].pool_index = -1;
+    }
+
     buddy_ready = 1;
+}
+
+/* 找到可容納 size 的最小 chunk pool；若找不到則回傳 -1。 */
+static int size_to_pool_index(unsigned long size)
+{
+    int i;
+
+    for (i = 0; i < SMALL_POOL_COUNT; i++)
+    {
+        if (size <= chunk_pools[i].chunk_size)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+/* 將一個新 page 切成固定大小 chunks，掛到指定 pool 的 free list。 */
+static int pool_grow(int pool_index)
+{
+    unsigned long page_addr;
+    unsigned long page_idx;
+    unsigned int chunk_size;
+    unsigned int chunk_count;
+    unsigned int i;
+    struct chunk *chunk;
+
+    page_addr = (unsigned long)buddy_alloc(0);
+    if (page_addr == 0)
+    {
+        return -1;
+    }
+
+    page_idx = addr_to_frame_idx(&buddy_allocator, page_addr);
+    chunk_size = chunk_pools[pool_index].chunk_size;
+    chunk_count = PAGE_SIZE / chunk_size;
+
+    pool_page_meta[page_idx].pool_index = pool_index;
+
+    for (i = chunk_count; i > 0; i--)
+    {
+        chunk = (struct chunk *)(page_addr + (unsigned long)(i - 1) * chunk_size);
+        chunk->next = chunk_pools[pool_index].free_list;
+        chunk_pools[pool_index].free_list = chunk;
+    }
+
+    log_pool_grow_event(page_idx, page_addr, chunk_size, chunk_count);
+
+    return 0;
+}
+
+/* 小於一頁的配置走 chunk pool；pool 缺頁時向 buddy allocator 要新 page。 */
+static void *pool_allocate(unsigned long size)
+{
+    int pool_index;
+    struct chunk *chunk;
+
+    pool_index = size_to_pool_index(size);
+    if (pool_index < 0)
+    {
+        return NULL;
+    }
+
+    if (chunk_pools[pool_index].free_list == NULL)
+    {
+        if (pool_grow(pool_index) < 0)
+        {
+            return NULL;
+        }
+    }
+
+    chunk = chunk_pools[pool_index].free_list;
+    chunk_pools[pool_index].free_list = chunk->next;
+    log_chunk_event("Allocate", (void *)chunk, chunk_pools[pool_index].chunk_size);
+
+    return (void *)chunk;
+}
+
+/* 依 chunk 所在 page 的 metadata 找到 pool，並把 chunk 放回 free list。 */
+static int pool_free_chunk(void *ptr)
+{
+    unsigned long addr;
+    unsigned long page_base;
+    unsigned long page_idx;
+    unsigned long offset;
+    int pool_index;
+    unsigned int chunk_size;
+    struct chunk *chunk;
+
+    addr = (unsigned long)ptr;
+    page_base = addr_to_page_base(addr);
+
+    if (page_base < buddy_allocator.base_addr ||
+        page_base >= frame_idx_to_addr(&buddy_allocator, buddy_allocator.page_count))
+    {
+        return -1;
+    }
+
+    page_idx = addr_to_frame_idx(&buddy_allocator, page_base);
+    pool_index = pool_page_meta[page_idx].pool_index;
+    if (pool_index < 0)
+    {
+        return -1;
+    }
+
+    chunk_size = chunk_pools[pool_index].chunk_size;
+    offset = addr - page_base;
+    if (offset % chunk_size != 0)
+    {
+        uart_puts("[Mem] Free ignored: pointer is not a chunk base\n");
+        return 0;
+    }
+
+    chunk = (struct chunk *)ptr;
+    chunk->next = chunk_pools[pool_index].free_list;
+    chunk_pools[pool_index].free_list = chunk;
+    log_chunk_event("Free", ptr, chunk_size);
+
+    return 0;
 }
 
 /*
@@ -244,19 +553,8 @@ void *buddy_alloc(unsigned int order)
      * 避免 block 內 member frame 殘留先前 free block 的狀態。
      */
     mark_block(&buddy_allocator, idx, order, 0);
-
-    // uart_puts("[Page] Allocate ");
-    // uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
-    // uart_puts(" at order ");
-    // uart_dec(order);
-    // uart_puts(", page ");
-    // uart_dec(idx);
-    // uart_putc('.');
-    // uart_puts(" Next address at order ");
-    // uart_dec(order);
-    // uart_puts(": ");
-    
-    // uart_puts("\n");
+    log_page_alloc_event(idx, order);
+    log_free_list_state("allocate");
 
     return (void *)(buddy_allocator.base_addr + idx * PAGE_SIZE);
 }
@@ -312,6 +610,8 @@ void buddy_free(void *ptr)
         if(!buddy_frame->is_free || !buddy_frame->is_head || buddy_frame->order != (int)cur_order)
             break;
 
+        log_buddy_found(idx, buddy_idx, cur_order);
+
         /*
          * 只有當 buddy 也是同 order 的 free block head 時才能合併。
          * 合併後的新 head 一定是兩者中較小的 frame index。
@@ -326,27 +626,47 @@ void buddy_free(void *ptr)
     }
 
     free_area_add(&buddy_allocator, idx, cur_order);
+    log_page_free_event(addr, idx, cur_order);
+    log_free_list_state("free");
 }
 
 /* 對外的 byte-based 配置介面，內部轉成 buddy order 後交給 buddy_alloc。 */
 void *allocate(unsigned long size)
 {
-    unsigned long pages;
-    unsigned int order;
-
     if (size == 0)
     {
         return NULL;
     }
 
-    pages = size_to_page_count(size);
-    order = pages_to_order(pages);
+    buddy_lazy_init();
 
-    return buddy_alloc(order);
+    if (size <= chunk_pools[SMALL_POOL_COUNT - 1].chunk_size)
+    {
+        void *chunk_ptr = pool_allocate(size);
+
+        if (chunk_ptr != NULL)
+        {
+            return chunk_ptr;
+        }
+    }
+
+    return buddy_alloc(pages_to_order(size_to_page_count(size)));
 }
 
-/* 對外的釋放介面，直接轉呼叫 buddy_free。 */
+/* 對外的釋放介面：pool chunk 回 pool，整頁配置則回 buddy allocator。 */
 void free(void *ptr)
 {
+    if (ptr == NULL)
+    {
+        return;
+    }
+
+    buddy_lazy_init();
+
+    if (pool_free_chunk(ptr) == 0)
+    {
+        return;
+    }
+
     buddy_free(ptr);
 }

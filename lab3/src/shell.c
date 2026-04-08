@@ -4,6 +4,7 @@
 #include "bootloader.h"
 #include "cpio.h"
 #include "fdt.h"
+#include "mem_allocator_test.h"
 
 #include <stdint.h>
 
@@ -16,6 +17,24 @@ static inline uint32_t bswap32(uint32_t x)
            ((x & 0x0000ff00U) << 8) |
            ((x & 0x00ff0000U) >> 8) |
            ((x & 0xff000000U) >> 24);
+}
+
+static unsigned long read_be_addr(const void *prop, int len) {
+    const uint32_t *cells = (const uint32_t *)prop;
+
+    if (!prop) {
+        return 0;
+    }
+
+    if (len >= 8) {
+        return ((unsigned long)bswap32(cells[0]) << 32) | (unsigned long)bswap32(cells[1]);
+    }
+
+    if (len >= 4) {
+        return (unsigned long)bswap32(cells[0]);
+    }
+
+    return 0;
 }
 
 static const char *skip_spaces(const char *s)
@@ -55,6 +74,41 @@ void shell_init(const void *fdt)
     }
 }
 
+// void shell_init(const void *fdt) {
+//     int offset;
+//     unsigned long initrd_start = 0;
+//     unsigned long initrd_end = 0;
+//     int start_len = 0;
+//     int end_len = 0;
+//     const void *start_prop;
+//     const void *end_prop;
+
+//     fdt_base = fdt;
+//     initrd_base = 0;
+
+//     // Read the initrd base address from the DTB /chosen node.
+//     offset = fdt_path_offset(fdt, "/chosen");
+//     if (offset < 0) {
+//         uart_puts("failed to find /chosen\n");
+//         return;
+//     }
+
+//     start_prop = fdt_getprop(fdt, offset, "linux,initrd-start", &start_len);
+//     end_prop = fdt_getprop(fdt, offset, "linux,initrd-end", &end_len);
+//     initrd_start = read_be_addr(start_prop, start_len);
+//     initrd_end = read_be_addr(end_prop, end_len);
+
+//     if (initrd_start != 0) {
+//         initrd_base = (const void *)initrd_start;
+//     }
+
+//     if (initrd_start != 0 && initrd_end > initrd_start) {
+//         initrd_init((void *)initrd_start, (void *)initrd_end);
+//     } else {
+//         uart_puts("initrd range not found in /chosen\n");
+//     }
+// }
+
 void print_shell_prompt()
 {
     uart_puts("opi-rv2> ");
@@ -83,7 +137,8 @@ void print_help()
     uart_puts("  info   - print system info.\n");
     uart_puts("  ls   - list files in initramfs.\n");
     uart_puts("  cat <file> - print file content from initramfs.\n");
-    uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
+    //uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
+    uart_puts("  test_alloc - run memory allocator test.\n");
 }
 
 void print_hello()
@@ -141,9 +196,13 @@ void run_command(const char *cmd)
 
         initrd_cat(NULL, filename);
     }
-    else if (check_command(cmd, "load"))
+    // else if (check_command(cmd, "load"))
+    // {
+    //     bootloader_load();
+    // }
+    else if (check_command(cmd, "test_alloc"))
     {
-        bootloader_load();
+        run_mem_allocator_test();
     }
     else
     {
