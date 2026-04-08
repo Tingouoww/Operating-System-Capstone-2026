@@ -30,8 +30,9 @@ struct buddy_allocator
 {
     unsigned long base_addr;
     unsigned long page_count;
-    struct frame *frames; // frame array pointer
+    struct frame *frames; // 以 page frame index 直接 O(1) lookup metadata
     struct list_head free_area[MAX_ORDER + 1];
+    unsigned int free_area_blocks[MAX_ORDER + 1]; // 每個 order 的 free block 數量，避免 log 時線性掃描
 };
 
 void buddy_init(struct buddy_allocator *buddy,

@@ -188,13 +188,10 @@ static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned
 
 static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
 {
-    uart_puts("[Chunk] ");
-    uart_puts(action);
-    uart_puts(" ");
-    uart_hex((unsigned long)ptr);
-    uart_puts(" at chunk size ");
-    uart_dec(chunk_size);
-    uart_puts("\n");
+    (void)action;
+    (void)ptr;
+    (void)chunk_size;
+    /* 暫時關閉 chunk allocator 的 debug log，避免測試輸出過多。 */
 }
 
 static void log_pool_grow_event(unsigned long page_idx,
@@ -202,29 +199,11 @@ static void log_pool_grow_event(unsigned long page_idx,
                                 unsigned int chunk_size,
                                 unsigned int chunk_count)
 {
-    uart_puts("[Chunk] Grow pool size ");
-    uart_dec(chunk_size);
-    uart_puts(" with page ");
-    uart_dec(page_idx);
-    uart_puts(" at ");
-    uart_hex(page_addr);
-    uart_puts(". Total chunks: ");
-    uart_dec(chunk_count);
-    uart_puts("\n");
-}
-
-static unsigned int free_area_count(struct list_head *head)
-{
-    unsigned int count = 0;
-    struct list_head *node = head->next;
-
-    while (node != head)
-    {
-        count++;
-        node = node->next;
-    }
-
-    return count;
+    (void)page_idx;
+    (void)page_addr;
+    (void)chunk_size;
+    (void)chunk_count;
+    /* 暫時關閉 chunk pool grow log，之後需要追 allocator 行為再打開。 */
 }
 
 static void log_free_list_state(const char *action)
@@ -245,7 +224,7 @@ static void log_free_list_state(const char *action)
         uart_puts("order ");
         uart_dec(order);
         uart_puts(" = ");
-        uart_dec(free_area_count(&buddy_allocator.free_area[order]));
+        uart_dec(buddy_allocator.free_area_blocks[order]);
     }
 
     uart_puts("\n");
@@ -262,30 +241,27 @@ static void init_frame(struct frame *frame)
 }
 
 /*
- * 依照一整個 block 的視角重寫 metadata。
- * head frame 保留 order；其餘 member frame 一律標成非 head。
+ * 只更新 block head 的 metadata。
+ * advanced exercise 要求 allocate/free 維持 O(log n)，
+ * 因此不能在每次 split / merge 時重寫整個 block 內所有 frame。
  */
-static void mark_block(struct buddy_allocator *buddy,
-                       unsigned long idx,
-                       unsigned int order,
-                       int is_free)
+static void set_block_head(struct buddy_allocator *buddy,
+                           unsigned long idx,
+                           unsigned int order,
+                           int is_free)
 {
-    unsigned long pages = block_pages(order);
-    unsigned long i;
+    struct frame *frame = &buddy->frames[idx];
 
-    buddy->frames[idx].order = (int)order;
-    buddy->frames[idx].is_free = is_free;
-    buddy->frames[idx].is_head = 1;
-    INIT_LIST_HEAD(&buddy->frames[idx].free_list);
+    frame->order = (int)order;
+    frame->is_free = is_free;
+    frame->is_head = 1;
+    INIT_LIST_HEAD(&frame->free_list);
+}
 
-    for (i = 1; i < pages; i++)
-    {
-        struct frame *member = &buddy->frames[idx + i];
-        member->order = FRAME_ORDER_UNUSED;
-        member->is_free = is_free;
-        member->is_head = 0;
-        INIT_LIST_HEAD(&member->free_list);
-    }
+/* 清掉一個已經不再代表任何 block head 的 frame metadata。 */
+static void clear_block_head(struct buddy_allocator *buddy, unsigned long idx)
+{
+    init_frame(&buddy->frames[idx]);
 }
 
 /*
@@ -296,8 +272,9 @@ static void free_area_add(struct buddy_allocator *buddy, unsigned long idx, unsi
 {
     struct frame *frame = &buddy->frames[idx];
 
-    mark_block(buddy, idx, order, 1);
+    set_block_head(buddy, idx, order, 1);
     list_add_tail(&frame->free_list, &buddy->free_area[order]);
+    buddy->free_area_blocks[order]++;
     log_free_area_add(idx, order);
 }
 
@@ -310,6 +287,7 @@ static void free_area_remove(struct frame *frame, unsigned long idx, unsigned in
     list_del(&frame->free_list);
     INIT_LIST_HEAD(&frame->free_list);
     frame->is_free = 0;
+    buddy_allocator.free_area_blocks[order]--;
     log_free_area_remove(idx, order);
 }
 
@@ -477,6 +455,7 @@ void buddy_init(struct buddy_allocator *allocator,
     for (i = 0; i <= MAX_ORDER; i++)
     {
         INIT_LIST_HEAD(&allocator->free_area[i]);
+        allocator->free_area_blocks[i] = 0;
     }
 
     for (idx = 0; idx < allocator->page_count; idx++)
@@ -544,15 +523,15 @@ void *buddy_alloc(unsigned int order)
          * 右半邊作為新的 free buddy 掛回對應 order 的 free list。
          */
         buddy_idx = idx + block_pages(cur_order);
-        mark_block(&buddy_allocator, idx, cur_order, 0);
+        set_block_head(&buddy_allocator, idx, cur_order, 0);
         free_area_add(&buddy_allocator, buddy_idx, cur_order);
     }
 
     /*
      * 即使剛好 exact-fit，也要把整個 block 的 metadata 改成 allocated，
-     * 避免 block 內 member frame 殘留先前 free block 的狀態。
+     * 只需要更新 block head 即可，member frame 不做 block-wide 重寫。
      */
-    mark_block(&buddy_allocator, idx, order, 0);
+    set_block_head(&buddy_allocator, idx, order, 0);
     log_page_alloc_event(idx, order);
     log_free_list_state("allocate");
 
@@ -572,6 +551,8 @@ void buddy_free(void *ptr)
     unsigned long addr = (unsigned long)ptr;
     unsigned long idx;
     unsigned long buddy_idx;
+    unsigned long old_idx;
+    unsigned long retired_idx;
     unsigned int cur_order;
 
     struct frame *frame;
@@ -598,7 +579,7 @@ void buddy_free(void *ptr)
     }
 
     cur_order = (unsigned int)frame->order;
-    mark_block(&buddy_allocator, idx, cur_order, 1);
+    set_block_head(&buddy_allocator, idx, cur_order, 1);
 
     while(cur_order < MAX_ORDER){
         struct frame *buddy_frame;
@@ -617,12 +598,22 @@ void buddy_free(void *ptr)
          * 合併後的新 head 一定是兩者中較小的 frame index。
          */
         free_area_remove(buddy_frame, buddy_idx, cur_order);
+        old_idx = idx;
+        retired_idx = old_idx;
 
-        if(buddy_idx < idx) idx = buddy_idx;
+        if (buddy_idx < idx)
+        {
+            idx = buddy_idx;
+        }
+        else
+        {
+            retired_idx = buddy_idx;
+        }
+
+        clear_block_head(&buddy_allocator, retired_idx);
 
         cur_order++;
-        frame = &buddy_allocator.frames[idx];
-        mark_block(&buddy_allocator, idx, cur_order, 1);
+        set_block_head(&buddy_allocator, idx, cur_order, 1);
     }
 
     free_area_add(&buddy_allocator, idx, cur_order);

@@ -10,6 +10,8 @@ void run_mem_allocator_test(void)
     void *ptr2;
     void *ptr3;
     void *ptr4;
+    void *merge_ptr1;
+    void *merge_ptr2;
     void *kmem_ptr1;
     void *kmem_ptr2;
     void *kmem_ptr3;
@@ -30,6 +32,13 @@ void run_mem_allocator_test(void)
     free(ptr2);
     free(ptr3);
     free(ptr4);
+
+    uart_puts("Testing merged head invalidation...\n");
+    merge_ptr1 = allocate(PAGE_SIZE);
+    merge_ptr2 = allocate(PAGE_SIZE);
+    free(merge_ptr1);
+    free(merge_ptr2);
+    free(merge_ptr2);
 
     uart_puts("Testing dynamic allocator...\n");
     kmem_ptr1 = allocate(16);
