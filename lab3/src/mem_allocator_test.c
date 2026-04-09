@@ -3,6 +3,15 @@
 #include "uart.h"
 
 #define MAX_ALLOC_SIZE ((1UL << MAX_ORDER) * PAGE_SIZE)
+#define BUDDY_MERGE_TEST_PAGES 64
+
+static int are_order0_buddies(void *lhs, void *rhs)
+{
+    unsigned long lhs_idx = ((unsigned long)lhs) / PAGE_SIZE;
+    unsigned long rhs_idx = ((unsigned long)rhs) / PAGE_SIZE;
+
+    return (lhs_idx ^ 1UL) == rhs_idx;
+}
 
 void run_mem_allocator_test(void)
 {
@@ -80,3 +89,87 @@ void run_mem_allocator_test(void)
 
     uart_puts("Memory allocation test finished.\n");
 }
+
+void run_buddy_merge_test(void)
+{
+    void *pages[BUDDY_MERGE_TEST_PAGES];
+    int alloc_count = 0;
+    int buddy_a = -1;
+    int buddy_b = -1;
+    int i;
+
+    uart_puts("Testing buddy merge detection...\n");
+
+    for (i = 0; i < BUDDY_MERGE_TEST_PAGES; i++)
+    {
+        int j;
+
+        pages[i] = allocate(PAGE_SIZE);
+        if (pages[i] == NULL)
+        {
+            uart_puts("Buddy merge test stopped early: allocate(PAGE_SIZE) returned NULL\n");
+            break;
+        }
+
+        alloc_count++;
+        for (j = 0; j < i; j++)
+        {
+            if (are_order0_buddies(pages[j], pages[i]))
+            {
+                buddy_a = j;
+                buddy_b = i;
+                break;
+            }
+        }
+
+        if (buddy_a >= 0)
+        {
+            break;
+        }
+    }
+
+    if (buddy_a < 0)
+    {
+        uart_puts("Buddy merge test could not find an order-0 buddy pair.\n");
+        for (i = 0; i < alloc_count; i++)
+        {
+            free(pages[i]);
+        }
+        return;
+    }
+
+    uart_puts("Buddy pair chosen by test: ");
+    uart_hex((unsigned long)pages[buddy_a]);
+    uart_puts(" and ");
+    uart_hex((unsigned long)pages[buddy_b]);
+    uart_puts("\n");
+
+    /*
+     * 先 free 其中一頁，再 free 它的 buddy。
+     * 第二次 free 時 buddy allocator 應該會印出 [*] Buddy found!。
+     */
+    free(pages[buddy_a]);
+    free(pages[buddy_b]);
+
+    for (i = 0; i < alloc_count; i++)
+    {
+        if (i == buddy_a || i == buddy_b)
+        {
+            continue;
+        }
+
+        free(pages[i]);
+    }
+
+    uart_puts("Buddy merge test finished.\n");
+}
+
+// void run_mem_allocator_test(void)
+// {
+//     void *ptr1;
+//     uart_puts("Testing memory allocation...\n");
+//     ptr1 = allocate(4000);
+//     free(ptr1);
+
+//     uart_puts("Memory allocation test finished.\n");
+// }

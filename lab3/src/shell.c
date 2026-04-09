@@ -74,41 +74,6 @@ void shell_init(const void *fdt)
     }
 }
 
-// void shell_init(const void *fdt) {
-//     int offset;
-//     unsigned long initrd_start = 0;
-//     unsigned long initrd_end = 0;
-//     int start_len = 0;
-//     int end_len = 0;
-//     const void *start_prop;
-//     const void *end_prop;
-
-//     fdt_base = fdt;
-//     initrd_base = 0;
-
-//     // Read the initrd base address from the DTB /chosen node.
-//     offset = fdt_path_offset(fdt, "/chosen");
-//     if (offset < 0) {
-//         uart_puts("failed to find /chosen\n");
-//         return;
-//     }
-
-//     start_prop = fdt_getprop(fdt, offset, "linux,initrd-start", &start_len);
-//     end_prop = fdt_getprop(fdt, offset, "linux,initrd-end", &end_len);
-//     initrd_start = read_be_addr(start_prop, start_len);
-//     initrd_end = read_be_addr(end_prop, end_len);
-
-//     if (initrd_start != 0) {
-//         initrd_base = (const void *)initrd_start;
-//     }
-
-//     if (initrd_start != 0 && initrd_end > initrd_start) {
-//         initrd_init((void *)initrd_start, (void *)initrd_end);
-//     } else {
-//         uart_puts("initrd range not found in /chosen\n");
-//     }
-// }
-
 void print_shell_prompt()
 {
     uart_puts("opi-rv2> ");
@@ -139,6 +104,7 @@ void print_help()
     uart_puts("  cat <file> - print file content from initramfs.\n");
     //uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
     uart_puts("  test_alloc - run memory allocator test.\n");
+    uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
 }
 
 void print_hello()
@@ -203,6 +169,10 @@ void run_command(const char *cmd)
     else if (check_command(cmd, "test_alloc"))
     {
         run_mem_allocator_test();
+    }
+    else if (check_command(cmd, "test_buddy_merge"))
+    {
+        run_buddy_merge_test();
     }
     else
     {
