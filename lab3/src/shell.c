@@ -19,24 +19,6 @@ static inline uint32_t bswap32(uint32_t x)
            ((x & 0xff000000U) >> 24);
 }
 
-static unsigned long read_be_addr(const void *prop, int len) {
-    const uint32_t *cells = (const uint32_t *)prop;
-
-    if (!prop) {
-        return 0;
-    }
-
-    if (len >= 8) {
-        return ((unsigned long)bswap32(cells[0]) << 32) | (unsigned long)bswap32(cells[1]);
-    }
-
-    if (len >= 4) {
-        return (unsigned long)bswap32(cells[0]);
-    }
-
-    return 0;
-}
-
 static const char *skip_spaces(const char *s)
 {
     while (*s == ' ')
