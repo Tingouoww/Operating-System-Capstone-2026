@@ -6,15 +6,12 @@ ARCHFLAGS = -march=rv64gc_zicsr_zifencei -mabi=lp64
 CFLAGS = $(ARCHFLAGS) -mcmodel=medany -ffreestanding -nostdlib -g -Wall -Iinclude
 MKIMAGE ?= mkimage
 LINKER_SCRIPT ?= linker.ld
-PAYLOAD_LINKER_SCRIPT ?= linker_payload.ld
 QEMU_LINKER_SCRIPT ?= linker_qemu.ld
-QEMU_PAYLOAD_LINKER_SCRIPT ?= linker_qemu_payload.ld
 LDFLAGS = -T $(LINKER_SCRIPT)
 QEMU ?= qemu-system-riscv64
 TARGET = kernel
-PAYLOAD = kernel_payload
 FIT = kernel.fit
-SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/string.c
+SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/string.c src/mem_allocator.c src/mem_allocator_test.c
 OBJS = $(notdir $(SRCS:.c=.o))
 OBJS := $(notdir $(OBJS:.S=.o))
 
@@ -22,11 +19,6 @@ build:
 	$(CC) $(CFLAGS) -c $(SRCS)
 	$(LD) $(LDFLAGS) -o $(TARGET).elf $(OBJS)
 	$(OBJCOPY) -O binary $(TARGET).elf $(TARGET).bin
-
-build-payload:
-	$(CC) $(CFLAGS) -DQEMU -DPAYLOAD -c $(SRCS)
-	$(LD) -T $(QEMU_PAYLOAD_LINKER_SCRIPT) -o $(PAYLOAD).elf $(OBJS)
-	$(OBJCOPY) -O binary $(PAYLOAD).elf $(PAYLOAD).bin
 
 fit: build
 	$(MKIMAGE) -f kernel.its $(FIT)
