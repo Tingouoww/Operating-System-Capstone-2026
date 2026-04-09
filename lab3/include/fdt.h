@@ -22,11 +22,21 @@ struct fdt_header
     uint32_t size_dt_struct;
 };
 
+struct fdt_memory_region
+{
+    unsigned long start;
+    unsigned long size;
+};
+
 int fdt_path_offset(const void *fdt, const char *path);
 const void *fdt_getprop(const void *fdt, int nodeoffset, const char *name, int *lenp);
 int fdt_read_prop_addr(const void *prop, int len, unsigned long *out);
+unsigned long fdt_totalsize(const void *fdt);
 
 int fdt_get_memory_range(const void *fdt, unsigned long *base, unsigned long *size);
 int fdt_get_initrd_range(const void *fdt, unsigned long *start, unsigned long *end);
+int fdt_get_reserved_memory_regions(const void *fdt,
+                                    struct fdt_memory_region *regions,
+                                    int max_regions);
 
 #endif

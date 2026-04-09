@@ -121,6 +121,94 @@ static unsigned long read_be_cells(const uint32_t *cells, int count)
 
     return value;
 }
+
+/*
+ * 取得指定 node 解析 reg 時要用的 cell 設定
+ * 多數情況下會先沿用父層傳進來的預設值，
+ * 若 node 自己有宣告 #address-cells / #size-cells，則以該值覆蓋。
+ */
+static int get_node_cells(const void *fdt,
+                          int nodeoffset,
+                          int default_addr_cells,
+                          int default_size_cells,
+                          int *address_cells,
+                          int *size_cells)
+{
+    int len = 0;
+    const void *prop;
+
+    /* 呼叫者必須提供輸出位置，才能把最後解析出的 cell 數寫回去。 */
+    if (!address_cells || !size_cells)
+    {
+        return -1;
+    }
+
+    /* 先採用上一層傳下來的預設值，若本 node 沒覆寫就沿用它。 */
+    *address_cells = default_addr_cells;
+    *size_cells = default_size_cells;
+
+    /* 若 node 自己定義 #address-cells，就覆蓋預設值。 */
+    prop = fdt_getprop(fdt, nodeoffset, "#address-cells", &len);
+    if (prop && len >= 4)
+    {
+        *address_cells = (int)bswap32(*(const uint32_t *)prop);
+    }
+
+    /* 若 node 自己定義 #size-cells，就覆蓋預設值。 */
+    prop = fdt_getprop(fdt, nodeoffset, "#size-cells", &len);
+    if (prop && len >= 4)
+    {
+        *size_cells = (int)bswap32(*(const uint32_t *)prop);
+    }
+
+    /* 這份 parser 只支援 1 或 2 個 32-bit cells 的 address/size 編碼。 */
+    if (*address_cells <= 0 || *address_cells > 2 ||
+        *size_cells <= 0 || *size_cells > 2)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int append_reg_regions(const void *reg_prop,
+                              int len,
+                              int addr_cells,
+                              int size_cells,
+                              struct fdt_memory_region *regions,
+                              int max_regions,
+                              int count)
+{
+    int tuple_cells = addr_cells + size_cells;
+    int tuples;
+    int i;
+    const uint32_t *cells = (const uint32_t *)reg_prop;
+
+    if (!reg_prop || !regions || max_regions <= 0 || tuple_cells <= 0)
+    {
+        return count;
+    }
+
+    /* 把 reg property 中的一組組 (start, size) 直接展平成 region array。 */
+    tuples = len / (tuple_cells * (int)sizeof(uint32_t)); // 計算 reg 裡有幾組區段
+    for (i = 0; i < tuples && count < max_regions; i++) 
+    {
+        unsigned long start = read_be_cells(cells, addr_cells);
+        unsigned long size = read_be_cells(cells + addr_cells, size_cells);
+
+        if (size != 0)
+        {
+            regions[count].start = start;
+            regions[count].size = size;
+            count++;
+        }
+
+        cells += tuple_cells; // 這組 tuple 已經讀完了，下一輪要移到下一組
+    }
+
+    return count; // 回傳的是 regions 共有幾筆有效資料
+}
 /* External */
 
 int fdt_path_offset(const void *fdt, const char *path)
@@ -355,6 +443,19 @@ int fdt_read_prop_addr(const void *prop, int len, unsigned long *out)
     return -1;
 }
 
+unsigned long fdt_totalsize(const void *fdt)
+{
+    const struct fdt_header *header = (const struct fdt_header *)fdt;
+
+    /* DTB blob 本身也佔用實體記憶體，因此 allocator 需要保留 totalsize 範圍。 */
+    if (!fdt || bswap32(header->magic) != 0xd00dfeed)
+    {
+        return 0;
+    }
+
+    return (unsigned long)bswap32(header->totalsize);
+}
+
 int fdt_get_memory_range(const void *fdt, unsigned long *base, unsigned long *size)
 {
     int mem_offset;     // memory node 在 FDT structure block 裡的 offset
@@ -388,6 +489,150 @@ int fdt_get_memory_range(const void *fdt, unsigned long *base, unsigned long *si
         return -1;
     return 0;
 }
+
+int fdt_get_reserved_memory_regions(const void *fdt,
+                                    struct fdt_memory_region *regions,
+                                    int max_regions)
+{
+    const struct fdt_header *header = (const struct fdt_header *)fdt;
+    const char *struct_ptr;
+    const char *struct_end;
+    int reserved_offset;
+    int root_addr_cells = 0;
+    int root_size_cells = 0;
+    int addr_cells = 0;
+    int size_cells = 0;
+    int depth = 0; // the depth of /reserved-memory
+    int count = 0; // the number of regions
+
+    if (!fdt || !regions || max_regions <= 0)
+    {
+        return -1;
+    }
+
+    /*
+     * 這裡只收集 /reserved-memory 的第一層子節點中，
+     * 具有固定 reg property 的保留區塊。
+     */
+    if (get_root_cells(fdt, &root_addr_cells, &root_size_cells) < 0)
+    {
+        return -1;
+    }
+
+    reserved_offset = fdt_path_offset(fdt, "/reserved-memory");
+    if (reserved_offset < 0)
+    {
+        return 0;
+    }
+
+    if (get_node_cells(fdt,
+                       reserved_offset,
+                       root_addr_cells,
+                       root_size_cells,
+                       &addr_cells,
+                       &size_cells) < 0)
+    {
+        return -1;
+    }
+
+    struct_end = (const char *)fdt + bswap32(header->off_dt_struct) +
+                 bswap32(header->size_dt_struct);
+    
+    struct_ptr = (const char *)fdt + reserved_offset;
+    uint32_t token = bswap32(*(const uint32_t *)struct_ptr);
+    if(token != FDT_BEGIN_NODE) return -1;
+    struct_ptr += 4; // token
+    struct_ptr += str_len(struct_ptr) + 1; // node name
+    struct_ptr = (const char *)align_up(struct_ptr, 4);
+    if(!struct_ptr || struct_ptr > struct_end) return -1;
+
+    while (struct_ptr + sizeof(uint32_t) <= struct_end)
+    {
+        const char *token_start = struct_ptr;
+        uint32_t token = bswap32(*(const uint32_t *)struct_ptr);
+
+        if (token == FDT_PROP)
+        {
+            uint32_t len;
+
+            struct_ptr += 4; // token
+            if (struct_ptr + 2 * sizeof(uint32_t) > struct_end) // len(4)+offset(4)
+            {
+                return -1;
+            }
+
+            len = bswap32(*(const uint32_t *)struct_ptr);
+            struct_ptr += 8;
+            struct_ptr += len;
+            if (struct_ptr > struct_end)
+            {
+                return -1;
+            }
+            struct_ptr = (const char *)align_up(struct_ptr, 4);
+            continue;
+        }
+
+        if (token == FDT_NOP)
+        {
+            struct_ptr += 4;
+            continue;
+        }
+
+        if (token == FDT_BEGIN_NODE)
+        {
+            int len = 0;
+            const void *reg_prop;
+
+            depth++; // go into sub-node
+            struct_ptr += 4;
+            struct_ptr += str_len(struct_ptr) + 1;
+            struct_ptr = (const char *)align_up(struct_ptr, 4);
+            
+            if (!struct_ptr)
+            {
+                return -1;
+            }
+
+            if (depth == 1)
+            {
+                reg_prop = fdt_getprop(fdt,
+                                       (int)(token_start - (const char *)fdt),
+                                       "reg",
+                                       &len);
+                count = append_reg_regions(reg_prop,
+                                           len,
+                                           addr_cells,
+                                           size_cells,
+                                           regions,
+                                           max_regions,
+                                           count);
+            }
+            continue;
+        }
+
+        if (token == FDT_END_NODE)
+        {
+            struct_ptr += 4;
+            if (depth == 0)
+            {
+                break;
+            }
+
+            depth--;
+            continue;
+        }
+
+        if (token == FDT_END)
+        {
+            break;
+        }
+
+        return -1;
+    }
+
+    return count;
+}
+
 int fdt_get_initrd_range(const void *fdt, unsigned long *start, unsigned long *end)
 {
     int chosen_offset;
