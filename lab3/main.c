@@ -1,4 +1,5 @@
 #include "bootloader.h"
+#include "mem_allocator.h"
 #include "shell.h"
 #include "uart.h"
 
@@ -13,6 +14,7 @@ void start_kernel(unsigned long hartid, void *dtb)
     uart_puts("[kernel] start_kernel @ ");
     uart_hex((unsigned long)&start_kernel);
     uart_puts("\n");
+    mem_allocator_init(dtb);
     shell_init(dtb);
     bootloader_init(hartid, dtb);
 

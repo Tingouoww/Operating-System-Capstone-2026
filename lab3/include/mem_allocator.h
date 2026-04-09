@@ -5,15 +5,8 @@
 
 #define PAGE_SIZE 4096UL
 #define MAX_ORDER 10
-
-#ifdef QEMU
-#define BUDDY_MEM_BASE_ADDR 0x80400000UL
-#else
-#define BUDDY_MEM_BASE_ADDR 0x10000000UL
-#endif
-
-#define BUDDY_MEM_SIZE 0x10000000UL
-#define BUDDY_MAX_PAGES (BUDDY_MEM_SIZE / PAGE_SIZE)
+#define BUDDY_MAX_MANAGED_SIZE 0x80000000UL
+#define BUDDY_MAX_PAGES (BUDDY_MAX_MANAGED_SIZE / PAGE_SIZE)
 #define FRAME_ORDER_UNUSED (-1)
 
 /* 定義 page frame 的結構 */
@@ -41,6 +34,8 @@ void buddy_init(struct buddy_allocator *buddy,
                 struct frame *frame_array);
 void *buddy_alloc(unsigned int order);
 void buddy_free(void *ptr);
+void mem_allocator_init(const void *fdt);
+void memory_reserve(unsigned long start, unsigned long size);
 
 void *allocate(unsigned long size);
 void free(void *ptr);

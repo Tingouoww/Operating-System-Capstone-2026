@@ -1,4 +1,5 @@
 #include "mem_allocator.h"
+#include "fdt.h"
 #include "list.h"
 #include "string.h"
 #include "uart.h"
@@ -7,6 +8,34 @@
 
 static struct buddy_allocator buddy_allocator;
 static struct frame frame_array[BUDDY_MAX_PAGES];
+/* 每個 page 一個 bitset-like 標記，記錄該 page frame 是否被保留。 */
+static unsigned char reserved_page_map[BUDDY_MAX_PAGES];
+/* 保留一份 DTB 指標，讓 lazy init 仍能回頭完成初始化。 */
+static const void *allocator_fdt;
+
+/* ----- Prototype -----*/
+static void log_block_range(unsigned long idx, unsigned int order);
+static void log_free_area_add(unsigned long idx, unsigned int order);
+static void log_free_area_remove(unsigned long idx, unsigned int order);
+static void log_next_page_addr(unsigned int order);
+static void log_page_alloc_event(unsigned long idx, unsigned int order);
+static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order);
+static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order);
+static void log_memory_region(const char *label, unsigned long start, unsigned long size);
+static void log_reserve_event(unsigned long start,
+                              unsigned long end,
+                              unsigned long first_page,
+                              unsigned long last_page);
+static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size);
+static void log_pool_grow_event(unsigned long page_idx,
+                                unsigned long page_addr,
+                                unsigned int chunk_size,
+                                unsigned int chunk_count);
+static void log_free_list_state(const char *action);
+
+extern char __kernel_start;
+extern char __kernel_end;
+
 struct chunk
 {
     struct chunk *next;
@@ -40,7 +69,7 @@ static struct chunk_pool chunk_pools[SMALL_POOL_COUNT] = {
     {1024, NULL},
     {2048, NULL},
 };
-static struct page_pool_meta pool_page_meta[BUDDY_MAX_PAGES];
+static struct page_pool_meta pool_page_meta[BUDDY_MAX_PAGES]; // 記錄第 page_idx 頁是拿來當哪個 pool 的 chunk page
 static int buddy_ready;
 
 /* 回傳某個 order 的 block 會包含幾個 page。 */
@@ -88,146 +117,21 @@ static unsigned long addr_to_page_base(unsigned long addr)
     return addr & ~(PAGE_SIZE - 1);
 }
 
+/* 找出大於等於 addr 的最小 page 邊界*/
+static unsigned long align_up_to_page(unsigned long addr)
+{
+    return (addr + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);// 先往上推再向下對齊
+}
+
+static unsigned long align_down_to_page(unsigned long addr)
+{
+    return addr & ~(PAGE_SIZE - 1);
+}
+
 /* 根據 buddy XOR 規則，算出同 order 另一半 block 的 head index。 */
 static unsigned long get_buddy_idx(unsigned long idx, unsigned int order)
 {
     return idx ^ block_pages(order);
-}
-
-/* 輸出 block 的 page 範圍，方便 demo 時解釋 block 邊界。 */
-static void log_block_range(unsigned long idx, unsigned int order)
-{
-    uart_puts("Range of pages: [");
-    uart_dec(idx);
-    uart_puts(", ");
-    uart_dec(idx + block_pages(order) - 1);
-    uart_puts("]");
-}
-
-static void log_free_area_add(unsigned long idx, unsigned int order)
-{
-    uart_puts("[+] Add");
-    uart_puts(" page ");
-    uart_dec(idx);
-    uart_puts(" to order ");
-    uart_dec(order);
-    uart_puts(". ");
-    log_block_range(idx, order);
-    uart_puts("\n");
-}
-
-static void log_free_area_remove(unsigned long idx, unsigned int order)
-{
-    uart_puts("[-] Remove");
-    uart_puts(" page ");
-    uart_dec(idx);
-    uart_puts(" from order ");
-    uart_dec(order);
-    uart_puts(". ");
-    log_block_range(idx, order);
-    uart_puts("\n");
-}
-
-static void log_next_page_addr(unsigned int order)
-{
-    struct frame *next_frame;
-
-    if (list_empty(&buddy_allocator.free_area[order]))
-    {
-        uart_puts("none");
-        return;
-    }
-
-    next_frame = list_first_entry(&buddy_allocator.free_area[order],
-                                  struct frame,
-                                  free_list);
-    uart_hex(frame_idx_to_addr(&buddy_allocator,
-                               (unsigned long)(next_frame - buddy_allocator.frames)));
-}
-
-static void log_page_alloc_event(unsigned long idx, unsigned int order)
-{
-    uart_puts("[Page] Allocate ");
-    uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
-    uart_puts(" at order ");
-    uart_dec(order);
-    uart_puts(", page ");
-    uart_dec(idx);
-    uart_puts(". Next address at order ");
-    uart_dec(order);
-    uart_puts(": ");
-    log_next_page_addr(order);
-    uart_puts("\n");
-}
-
-static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
-{
-    uart_puts("[Page] Free ");
-    uart_hex(addr);
-    uart_puts(" and add back to order ");
-    uart_dec(order);
-    uart_puts(", page ");
-    uart_dec(idx);
-    uart_puts(". Next address at order ");
-    uart_dec(order);
-    uart_puts(": ");
-    log_next_page_addr(order);
-    uart_puts("\n");
-}
-
-static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order)
-{
-    uart_puts("[*] Buddy found! buddy idx: ");
-    uart_dec(buddy_idx);
-    uart_puts(" for page ");
-    uart_dec(idx);
-    uart_puts(" with order ");
-    uart_dec(order);
-    uart_puts("\n");
-}
-
-static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
-{
-    (void)action;
-    (void)ptr;
-    (void)chunk_size;
-    /* 暫時關閉 chunk allocator 的 debug log，避免測試輸出過多。 */
-}
-
-static void log_pool_grow_event(unsigned long page_idx,
-                                unsigned long page_addr,
-                                unsigned int chunk_size,
-                                unsigned int chunk_count)
-{
-    (void)page_idx;
-    (void)page_addr;
-    (void)chunk_size;
-    (void)chunk_count;
-    /* 暫時關閉 chunk pool grow log，之後需要追 allocator 行為再打開。 */
-}
-
-static void log_free_list_state(const char *action)
-{
-    unsigned int order;
-
-    uart_puts("[Buddy] Free list blocks after ");
-    uart_puts(action);
-    uart_puts(": ");
-
-    for (order = 0; order <= MAX_ORDER; order++)
-    {
-        if (order > 0)
-        {
-            uart_puts(", ");
-        }
-
-        uart_puts("order ");
-        uart_dec(order);
-        uart_puts(" = ");
-        uart_dec(buddy_allocator.free_area_blocks[order]);
-    }
-
-    uart_puts("\n");
 }
 
 /* 把單一 frame metadata 清成未使用狀態。 */
@@ -291,27 +195,262 @@ static void free_area_remove(struct frame *frame, unsigned long idx, unsigned in
     log_free_area_remove(idx, order);
 }
 
-/* 第一次使用 allocator 時才做全域初始化，避免開機流程太早碰 allocator。 */
-static void buddy_lazy_init(void)
+/* 回到還沒分配過任何 chunk page 的初始狀態 */
+static void reset_dynamic_allocators(void)
 {
+    unsigned int i;
     unsigned long idx;
+
+    /* 重新建 allocator layout 時，chunk pools 也要一起回到初始狀態。 */
+    for (i = 0; i < SMALL_POOL_COUNT; i++)
+    {
+        chunk_pools[i].free_list = NULL;
+    }
+
+    for (idx = 0; idx < BUDDY_MAX_PAGES; idx++)
+    {
+        pool_page_meta[idx].pool_index = -1;
+    }
+}
+
+static void add_free_range(unsigned long start_idx, unsigned long page_count)
+{
+    unsigned long idx = start_idx;
+    unsigned long remaining = page_count;
+
+    /* 把一段連續可用 pages 切成多個對齊的 blocks 掛回 free list。 */
+    while (remaining > 0)
+    {
+        unsigned int order = MAX_ORDER;
+
+        while (order > 0 &&
+               (block_pages(order) > remaining || // 太大
+                (idx & (block_pages(order) - 1)) != 0)) // 對齊檢查(沒對齊)
+        {
+            order--;
+        }
+
+        free_area_add(&buddy_allocator, idx, order);
+        idx += block_pages(order);
+        remaining -= block_pages(order);
+    }
+}
+
+static void buddy_rebuild_free_areas(void)
+{
+    int i;
+    unsigned long idx;
+
+    /*
+     * 基於 reserved_page_map 重建 allocator 視圖：
+     * 只有未保留的連續區段會被切成 free buddy blocks。
+     */
+    for (i = 0; i <= MAX_ORDER; i++)
+    {
+        INIT_LIST_HEAD(&buddy_allocator.free_area[i]);
+        buddy_allocator.free_area_blocks[i] = 0;
+    }
+
+    for (idx = 0; idx < buddy_allocator.page_count; idx++)
+    {
+        init_frame(&buddy_allocator.frames[idx]);
+    }
+
+    idx = 0;
+    while (idx < buddy_allocator.page_count)
+    {
+        unsigned long run_start;
+
+        while (idx < buddy_allocator.page_count && reserved_page_map[idx] != 0)
+        {
+            idx++;
+        }
+
+        run_start = idx;
+        while (idx < buddy_allocator.page_count && reserved_page_map[idx] == 0)
+        {
+            idx++;
+        }
+
+        if (idx > run_start)
+        {
+            add_free_range(run_start, idx - run_start);
+        }
+    }
+}
+
+void memory_reserve(unsigned long start, unsigned long size)
+{
+    unsigned long reserve_start;
+    unsigned long reserve_end;
+    unsigned long managed_start;
+    unsigned long managed_end;
+    unsigned long idx;
+    unsigned long first_page;
+    unsigned long last_page;
+
+    if (size == 0 || buddy_allocator.page_count == 0)
+    {
+        return;
+    }
+
+    /* 以 page 為單位保留，避免 allocator 仍把同一頁的一部分分配出去。 */
+    reserve_start = align_down_to_page(start); // 起點往下對齊到 page 開頭。
+    if (start + size < start)
+    {
+        reserve_end = ~0UL;
+    }
+    else
+    {
+        reserve_end = align_up_to_page(start + size); // 終點往上對齊到 page 結尾
+    }
+
+    // buddy allocator 實際能管的區間 [managed_start, managed_end)
+    managed_start = buddy_allocator.base_addr;
+    managed_end = frame_idx_to_addr(&buddy_allocator, buddy_allocator.page_count);
+
+    // 保留區間跟 allocator 管理範圍完全沒交集就直接返回
+    if (reserve_end <= managed_start || reserve_start >= managed_end)
+    {
+        return;
+    }
+
+    // 保留範圍裁切到 allocator 管理範圍內
+    if (reserve_start < managed_start)
+    {
+        reserve_start = managed_start;
+    }
+    if (reserve_end > managed_end)
+    {
+        reserve_end = managed_end;
+    }
+
+    first_page = addr_to_frame_idx(&buddy_allocator, reserve_start);
+    last_page = addr_to_frame_idx(&buddy_allocator, reserve_end);
+    log_reserve_event(reserve_start, reserve_end, first_page, last_page);
+
+    for (idx = first_page; idx < last_page; idx++)
+    {
+        reserved_page_map[idx] = 1;
+    }
+}
+
+static void reserve_memory_regions_from_fdt(const void *fdt)
+{
+    struct fdt_memory_region reserved_regions[32];
+    unsigned long kernel_start = (unsigned long)&__kernel_start;
+    unsigned long kernel_size = (unsigned long)(&__kernel_end - &__kernel_start);
+    unsigned long initrd_start = 0;
+    unsigned long initrd_end = 0;
+    int region_count;
+    int i;
+
+    /* 四類保留來源：kernel image、dtb blob、initramfs、reserved-memory */
+    log_memory_region("kernel", kernel_start, kernel_size);
+    memory_reserve(kernel_start, kernel_size);
+
+    log_memory_region("dtb", (unsigned long)fdt, fdt_totalsize(fdt));
+    memory_reserve((unsigned long)fdt, fdt_totalsize(fdt));
+
+    if (fdt_get_initrd_range(fdt, &initrd_start, &initrd_end) == 0 &&
+        initrd_end > initrd_start)
+    {
+        log_memory_region("initrd", initrd_start, initrd_end - initrd_start);
+        memory_reserve(initrd_start, initrd_end - initrd_start);
+    }
+    else
+    {
+        log_memory_region("initrd", 0, 0);
+    }
+
+    region_count = fdt_get_reserved_memory_regions(fdt,
+                                                   reserved_regions,
+                                                   (int)(sizeof(reserved_regions) /
+                                                         sizeof(reserved_regions[0])));
+    if (region_count <= 0)
+    {
+        return;
+    }
+
+    for (i = 0; i < region_count; i++)
+    {
+        /* reserved-memory 也統一走 [Reserve] 日誌格式。 */
+        memory_reserve(reserved_regions[i].start, reserved_regions[i].size);
+    }
+}
+
+void mem_allocator_init(const void *fdt)
+{
+    unsigned long mem_base = 0; // /memory first memory region start address
+    unsigned long mem_size = 0; // /memory first memory region size
+    /* 把 mem_base 向上對齊到 page boundary 後的起點。
+因為 buddy allocator 以 page 為單位管理，起點要 page-aligned。*/
+    unsigned long aligned_base; 
+    unsigned long aligned_end;
+    unsigned long managed_size;
+    unsigned long max_size = BUDDY_MAX_PAGES * PAGE_SIZE;
 
     if (buddy_ready)
     {
         return;
     }
 
-    buddy_init(&buddy_allocator,
-               BUDDY_MEM_BASE_ADDR,
-               BUDDY_MEM_SIZE,
-               frame_array);
-
-    for (idx = 0; idx < BUDDY_MAX_PAGES; idx++)
+    /*
+     * 從 DTB 決定實際 DRAM 起點與大小，
+     * 但受限於目前 frame metadata 的最大容量。
+     */
+    allocator_fdt = fdt;
+    if (!fdt || fdt_get_memory_range(fdt, &mem_base, &mem_size) < 0)
     {
-        pool_page_meta[idx].pool_index = -1;
+        uart_puts("[Mem] allocator init failed: cannot read /memory\n");
+        return;
     }
 
+    aligned_base = align_up_to_page(mem_base);
+    aligned_end = align_down_to_page(mem_base + mem_size);
+    if (aligned_end <= aligned_base)
+    {
+        uart_puts("[Mem] allocator init failed: invalid memory range\n");
+        return;
+    }
+
+    log_memory_region("memory", mem_base, mem_size);
+    log_memory_region("managed", aligned_base, aligned_end - aligned_base);
+
+    managed_size = aligned_end - aligned_base;
+    if (managed_size > max_size)
+    {
+        managed_size = max_size;
+    }
+
+    buddy_allocator.base_addr = aligned_base;
+    buddy_allocator.page_count = managed_size / PAGE_SIZE;
+    buddy_allocator.frames = frame_array;
+
+    /* 先標記保留區，再依剩餘區段重建 free lists。 */
+    reset_dynamic_allocators();
+    memset(reserved_page_map, 0, sizeof(reserved_page_map)); // 先將所有 frame 初始化為未保留
+
+    /*
+     * 保留 physical page 0，避免 allocator 回傳 NULL 指標語意衝突
+     */
+    if (buddy_allocator.base_addr == 0)
+    {
+        memory_reserve(0, PAGE_SIZE);
+    }
+
+    reserve_memory_regions_from_fdt(fdt);
+    buddy_rebuild_free_areas();
     buddy_ready = 1;
+}
+
+/* 第一次使用 allocator 時才做全域初始化，避免開機流程太早碰 allocator。 */
+static void buddy_lazy_init(void)
+{
+    if (!buddy_ready)
+    {
+        mem_allocator_init(allocator_fdt);
+    }
 }
 
 /* 找到可容納 size 的最小 chunk pool；若找不到則回傳 -1。 */
@@ -498,6 +637,10 @@ void *buddy_alloc(unsigned int order)
     struct frame *frame;
 
     buddy_lazy_init();
+    if (!buddy_ready)
+    {
+        return NULL;
+    }
 
     if (order > MAX_ORDER) return NULL;
 
@@ -560,6 +703,10 @@ void buddy_free(void *ptr)
     if (ptr == NULL) return;
 
     buddy_lazy_init();
+    if (!buddy_ready)
+    {
+        return;
+    }
 
     if (addr < buddy_allocator.base_addr ||
         addr >= frame_idx_to_addr(&buddy_allocator, buddy_allocator.page_count) ||
@@ -630,6 +777,10 @@ void *allocate(unsigned long size)
     }
 
     buddy_lazy_init();
+    if (!buddy_ready)
+    {
+        return NULL;
+    }
 
     if (size <= chunk_pools[SMALL_POOL_COUNT - 1].chunk_size)
     {
@@ -653,6 +804,10 @@ void free(void *ptr)
     }
 
     buddy_lazy_init();
+    if (!buddy_ready)
+    {
+        return;
+    }
 
     if (pool_free_chunk(ptr) == 0)
     {
@@ -660,4 +815,192 @@ void free(void *ptr)
     }
 
     buddy_free(ptr);
+}
+
+/* ------ LOG ------*/
+
+/* 輸出 block 的 page 範圍，方便 demo 時解釋 block 邊界。 */
+static void log_block_range(unsigned long idx, unsigned int order)
+{
+    uart_puts("Range of pages: [");
+    uart_dec(idx);
+    uart_puts(", ");
+    uart_dec(idx + block_pages(order) - 1);
+    uart_puts("]");
+}
+
+static void log_free_area_add(unsigned long idx, unsigned int order)
+{
+    uart_puts("[+] Add");
+    uart_puts(" page ");
+    uart_dec(idx);
+    uart_puts(" to order ");
+    uart_dec(order);
+    uart_puts(". ");
+    log_block_range(idx, order);
+    uart_puts("\n");
+}
+
+static void log_free_area_remove(unsigned long idx, unsigned int order)
+{
+    uart_puts("[-] Remove");
+    uart_puts(" page ");
+    uart_dec(idx);
+    uart_puts(" from order ");
+    uart_dec(order);
+    uart_puts(". ");
+    log_block_range(idx, order);
+    uart_puts("\n");
+}
+
+static void log_next_page_addr(unsigned int order)
+{
+    struct frame *next_frame;
+
+    if (list_empty(&buddy_allocator.free_area[order]))
+    {
+        uart_puts("none");
+        return;
+    }
+
+    next_frame = list_first_entry(&buddy_allocator.free_area[order],
+                                  struct frame,
+                                  free_list);
+    uart_hex(frame_idx_to_addr(&buddy_allocator,
+                               (unsigned long)(next_frame - buddy_allocator.frames)));
+}
+
+static void log_page_alloc_event(unsigned long idx, unsigned int order)
+{
+    uart_puts("[Page] Allocate ");
+    uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
+    uart_puts(" at order ");
+    uart_dec(order);
+    uart_puts(", page ");
+    uart_dec(idx);
+    uart_puts(". Next address at order ");
+    uart_dec(order);
+    uart_puts(": ");
+    log_next_page_addr(order);
+    uart_puts("\n");
+}
+
+static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
+{
+    uart_puts("[Page] Free ");
+    uart_hex(addr);
+    uart_puts(" and add back to order ");
+    uart_dec(order);
+    uart_puts(", page ");
+    uart_dec(idx);
+    uart_puts(". Next address at order ");
+    uart_dec(order);
+    uart_puts(": ");
+    log_next_page_addr(order);
+    uart_puts("\n");
+}
+
+static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order)
+{
+    uart_puts("[*] Buddy found! buddy idx: ");
+    uart_dec(buddy_idx);
+    uart_puts(" for page ");
+    uart_dec(idx);
+    uart_puts(" with order ");
+    uart_dec(order);
+    uart_puts("\n");
+}
+
+static void log_memory_region(const char *label,
+                              unsigned long start,
+                              unsigned long size)
+{
+    unsigned long end;
+
+    uart_puts("[Mem] ");
+    uart_puts(label);
+    uart_puts(": ");
+
+    if (size == 0)
+    {
+        uart_puts("none\n");
+        return;
+    }
+
+    end = start + size;
+    if (end < start)
+    {
+        end = ~0UL;
+    }
+
+    uart_puts("[");
+    uart_hex(start);
+    uart_puts(", ");
+    uart_hex(end);
+    uart_puts("), size=");
+    uart_hex(size);
+    uart_puts("\n");
+}
+
+static void log_reserve_event(unsigned long start,
+                              unsigned long end,
+                              unsigned long first_page,
+                              unsigned long last_page)
+{
+    uart_puts("[Reserve] Reserve address [");
+    uart_hex(start);
+    uart_puts(", ");
+    uart_hex(end);
+    uart_puts("). Range of pages: [");
+    uart_dec(first_page);
+    uart_puts(", ");
+    uart_dec(last_page);
+    uart_puts(")\n");
+}
+
+static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
+{
+    uart_puts("[Chunk] ");
+    uart_puts(action);
+    uart_puts(" ");
+    uart_hex((unsigned long)ptr);
+    uart_puts(" at chunk size ");
+    uart_dec(chunk_size);
+    uart_puts("\n");
+}
+
+static void log_pool_grow_event(unsigned long page_idx,
+                                unsigned long page_addr,
+                                unsigned int chunk_size,
+                                unsigned int chunk_count)
+{
+    (void)page_idx;
+    (void)page_addr;
+    (void)chunk_size;
+    (void)chunk_count;
+    /* 暫時關閉 chunk pool grow log，之後需要追 allocator 行為再打開。 */
+}
+
+static void log_free_list_state(const char *action)
+{
+    unsigned int order;
+
+    uart_puts("[Buddy] Free list blocks after ");
+    uart_puts(action);
+    uart_puts(": ");
+
+    for (order = 0; order <= MAX_ORDER; order++)
+    {
+        if (order > 0)
+        {
+            uart_puts(", ");
+        }
+
+        uart_puts("order ");
+        uart_dec(order);
+        uart_puts(" = ");
+        uart_dec(buddy_allocator.free_area_blocks[order]);
+    }
+
+    uart_puts("\n");
 }
