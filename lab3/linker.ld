@@ -2,8 +2,9 @@ OUTPUT_ARCH(riscv) /* Target architecture: RISC-V */
 ENTRY(_start) /* Program entry point */
 SECTIONS
 {
-    . = 0x00200000;
+    . = 0x00200000; /* location counter */
     _start = .;
+    __kernel_start = .;
     .text : { *(.text.boot) *(.text) } /* Boot code first */
     .rodata : { *(.rodata) }
     .data : { *(.data) }
@@ -15,5 +16,6 @@ SECTIONS
     } /* Uninitialized global variables */
     . = ALIGN(16);   /* 16-byte aligned stack base */
     . = . + 0x4000;  /* Reserve 16 KiB for stack */
+    __kernel_end = .;
     _end = .;        /* Initial stack pointer */
 }

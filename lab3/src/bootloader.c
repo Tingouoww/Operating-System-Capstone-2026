@@ -4,12 +4,6 @@
 #define BOOT_MAGIC 0x544f4f42U
 #define MAX_KERNEL_SIZE (16UL * 1024UL * 1024UL)
 
-#ifdef QEMU
-#define BOOTLOADER_RELOC_BASE 0x80A00000UL
-#else
-#define BOOTLOADER_RELOC_BASE 0x20000000UL
-#endif
-
 static unsigned long boot_hartid;
 static void *boot_dtb;
 
@@ -59,11 +53,6 @@ void bootloader_load(void)
     uart_hex(KERNEL_LOAD_ADDR);
     uart_puts("\n");
 
-    // if (!boot_ranges_checked || !boot_ranges_safe) {
-    //     uart_puts("Bootloader safety check not passed, reject load.\n");
-    //     return;
-    // }
-
     magic = uart_get_u32_le();
     if (magic != BOOT_MAGIC)
     {
@@ -77,12 +66,6 @@ void bootloader_load(void)
         uart_puts("Invalid image size.\n");
         return;
     }
-
-    // if (!kernel_load_range_is_safe((unsigned long)size))
-    // {
-    //     uart_puts("Kernel target range is unsafe.\n");
-    //     return;
-    // }
 
     uart_puts("Receiving kernel, size = ");
     uart_hex(size);
