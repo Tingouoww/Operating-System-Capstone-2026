@@ -8,27 +8,10 @@
 #include "sbi.h"
 #include "timer.h"
 
-#define INITRD_BASE        0xa0200000
-#define STACK_SIZE         0x1000
-#define TIMER_INTERVAL_SEC 2
-#define MAX_TIMERS         16
+#define INITRD_BASE 0xa0200000
+#define STACK_SIZE  0x1000
 
 static unsigned long initrd_base = INITRD_BASE;
-static unsigned long timer_freq  = 10000000;
-unsigned long        boot_seconds = 0;
-
-struct timer_entry {
-    unsigned long deadline_ticks;
-    void (*callback)(void *);
-    void *arg;
-    int   active;
-};
-
-static struct timer_entry timer_queue[MAX_TIMERS];
-
-// Absolute tick value currently programmed into the hardware timer.
-// 0 means not programmed.
-static unsigned long timer_next_deadline = 0;
 
 static int local_hextoi(const char *s, int n) {
     int r = 0;
@@ -54,85 +37,6 @@ static int local_memcmp(const void *a, const void *b, int n) {
         x++; y++;
     }
     return 0;
-}
-
-static void reprogram_timer(void) {
-    unsigned long earliest = 0;
-    for (int i = 0; i < MAX_TIMERS; i++) {
-        if (!timer_queue[i].active) continue;
-        if (earliest == 0 || timer_queue[i].deadline_ticks < earliest)
-            earliest = timer_queue[i].deadline_ticks;
-    }
-    if (earliest == 0) return;
-    timer_next_deadline = earliest;
-    sbi_set_timer(earliest);
-}
-
-static void fire_expired_timers(unsigned long now) {
-    for (int i = 0; i < MAX_TIMERS; i++) {
-        if (timer_queue[i].active && timer_queue[i].deadline_ticks <= now) {
-            timer_queue[i].active = 0;
-            timer_queue[i].callback(timer_queue[i].arg);
-        }
-    }
-}
-
-void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
-    unsigned long now;
-    asm volatile("rdtime %0" : "=r"(now));
-    unsigned long deadline = now + sec * timer_freq;
-
-    for (int i = 0; i < MAX_TIMERS; i++) {
-        if (!timer_queue[i].active) {
-            timer_queue[i].deadline_ticks = deadline;
-            timer_queue[i].callback       = callback;
-            timer_queue[i].arg            = arg;
-            timer_queue[i].active         = 1;
-            // Reprogram hardware if this deadline is earlier than current.
-            if (timer_next_deadline == 0 || deadline < timer_next_deadline) {
-                timer_next_deadline = deadline;
-                sbi_set_timer(deadline);
-            }
-            return;
-        }
-    }
-    uart_puts("add_timer: queue full\n");
-}
-
-static void boot_tick_cb(void *arg) {
-    (void)arg;
-    boot_seconds += TIMER_INTERVAL_SEC;
-    uart_puts("boot time: ");
-    uart_dec(boot_seconds);
-    uart_puts("\n");
-    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
-}
-
-static unsigned long get_timer_freq(const void *fdt) {
-    int len, off;
-    const unsigned char *p;
-
-    /*
-     * The standard DT layout stores timebase-frequency on /cpus.
-     * Some trees may duplicate it on cpu@0, so keep that as a fallback.
-     */
-    off = fdt_path_offset(fdt, "/cpus");
-    if (off >= 0) {
-        p = fdt_getprop(fdt, off, "timebase-frequency", &len);
-        if (p && len >= 4) {
-            return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) |
-                   ((unsigned long)p[2] << 8)  |  (unsigned long)p[3];
-        }
-    }
-
-    off = fdt_path_offset(fdt, "/cpus/cpu@0");
-    if (off < 0) return 10000000;
-
-    p = fdt_getprop(fdt, off, "timebase-frequency", &len);
-    if (!p || len < 4) return 10000000;
-
-    return ((unsigned long)p[0] << 24) | ((unsigned long)p[1] << 16) |
-           ((unsigned long)p[2] << 8)  |  (unsigned long)p[3];
 }
 
 int exec(const char *filename) {
@@ -173,41 +77,13 @@ int exec(const char *filename) {
 }
 
 struct pt_regs {
-    unsigned long ra;
-    unsigned long sp;
-    unsigned long gp;
-    unsigned long tp;
-    unsigned long t0;
-    unsigned long t1;
-    unsigned long t2;
-    unsigned long s0;
-    unsigned long s1;
-    unsigned long a0;
-    unsigned long a1;
-    unsigned long a2;
-    unsigned long a3;
-    unsigned long a4;
-    unsigned long a5;
-    unsigned long a6;
-    unsigned long a7;
-    unsigned long s2;
-    unsigned long s3;
-    unsigned long s4;
-    unsigned long s5;
-    unsigned long s6;
-    unsigned long s7;
-    unsigned long s8;
-    unsigned long s9;
-    unsigned long s10;
-    unsigned long s11;
-    unsigned long t3;
-    unsigned long t4;
-    unsigned long t5;
-    unsigned long t6;
-    unsigned long sepc;
-    unsigned long sstatus;
-    unsigned long scause;
-    unsigned long stval;
+    unsigned long ra, sp, gp, tp;
+    unsigned long t0, t1, t2;
+    unsigned long s0, s1;
+    unsigned long a0, a1, a2, a3, a4, a5, a6, a7;
+    unsigned long s2, s3, s4, s5, s6, s7, s8, s9, s10, s11;
+    unsigned long t3, t4, t5, t6;
+    unsigned long sepc, sstatus, scause, stval;
 };
 
 #define SCAUSE_IRQ_FLAG         (1UL << 63)
@@ -215,41 +91,27 @@ struct pt_regs {
 #define SCAUSE_SUPERVISOR_EXT   9
 
 void do_trap(struct pt_regs *regs) {
-    // SCAUSE_IRQ_FLAG : 1 表示為 interrupt
     if (regs->scause & SCAUSE_IRQ_FLAG) {
-        unsigned long irq = regs->scause & ~SCAUSE_IRQ_FLAG; // 取出中斷號碼
-
-        if (irq == SCAUSE_SUPERVISOR_TIMER) {
-            unsigned long cur;
-            asm volatile("rdtime %0" : "=r"(cur));
-            timer_next_deadline = 0;
-            fire_expired_timers(cur);
-            reprogram_timer();
-        } else if (irq == SCAUSE_SUPERVISOR_EXT) {
+        unsigned long irq = regs->scause & ~SCAUSE_IRQ_FLAG;
+        if (irq == SCAUSE_SUPERVISOR_TIMER)
+            timer_handle_irq();
+        else if (irq == SCAUSE_SUPERVISOR_EXT)
             uart_handle_external_irq();
-        }
-        // Interrupts: do NOT advance sepc
     } else {
-        // Exception (ecall from U-mode, etc.)
         uart_puts("=== S-Mode trap ===\n");
-        uart_puts("scause: ");
-        uart_dec(regs->scause);
-        uart_puts("\n");
-        uart_puts("sepc: ");
-        uart_hex(regs->sepc);
-        uart_puts("\n");
-        uart_puts("stval: ");
-        uart_dec(regs->stval);
-        uart_puts("\n");
-        if (regs->scause == 8)  // U-mode ecall: skip past ecall instruction
+        uart_puts("scause: "); uart_dec(regs->scause); uart_puts("\n");
+        uart_puts("sepc: ");   uart_hex(regs->sepc);   uart_puts("\n");
+        uart_puts("stval: ");  uart_dec(regs->stval);  uart_puts("\n");
+        if (regs->scause == 8)
             regs->sepc += 4;
     }
 }
 
 void start_kernel(unsigned long hartid, void *dtb) {
     char buf[128];
-    int len = 0;
+    int  len = 0;
     char c;
+
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
     mem_allocator_init(dtb);
@@ -257,15 +119,11 @@ void start_kernel(unsigned long hartid, void *dtb) {
     bootloader_init(hartid, dtb);
     initrd_base = fdt_get_initrd_start_or_default(dtb, INITRD_BASE);
 
-    // uart_interrupt_init(hartid);
+    asm volatile("csrs sie, %0" :: "r"(1UL << 5));  // STIE
+    asm volatile("csrs sie, %0" :: "r"(1UL << 9));  // SEIE
+    asm volatile("csrsi sstatus, 0x2");              // SIE
 
-    timer_freq = get_timer_freq(dtb);
-
-    asm volatile("csrs sie, %0" :: "r"(1UL << 5));   // STIE: enable timer interrupt
-    asm volatile("csrs sie, %0" :: "r"(1UL << 9));   // SEIE: enable external interrupts
-    asm volatile("csrsi sstatus, 0x2");               // SIE: global interrupt enable
-
-    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
+    timer_init(dtb);
 
     print_shell_prompt();
     uart_puts("boot time: 0\n");
