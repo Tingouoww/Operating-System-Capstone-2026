@@ -7,8 +7,27 @@
 #include "mem_allocator.h"
 #include "mem_allocator_test.h"
 #include "string.h"
+#include "timer.h"
 
 #include <stdint.h>
+
+#define MSG_POOL_COUNT 16
+#define MSG_POOL_LEN   64
+
+static char msg_pool[MSG_POOL_COUNT][MSG_POOL_LEN];
+static int  msg_pool_idx = 0;
+
+static void settimeout_cb(void *arg) {
+    uart_puts((const char *)arg);
+    uart_puts("\n");
+}
+
+static int simple_atoi(const char *s) {
+    int n = 0;
+    while (*s >= '0' && *s <= '9')
+        n = n * 10 + (*s++ - '0');
+    return n;
+}
 
 extern int exec(const char *filename);
 
@@ -92,6 +111,7 @@ void print_help()
     uart_puts("  test_alloc - run memory allocator test.\n");
     //uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
     uart_puts("  exec <file> - execute user program from initramfs in U-mode.\n");
+    uart_puts("  settimeout <sec> <msg> - show text after x sec.\n");
 }
 
 void print_hello()
@@ -177,6 +197,29 @@ void run_command(const char *cmd)
             uart_puts("exec: file not found\n");
         }
         // exec() never returns on success (sret jumps to U-mode)
+    }
+    else if (cmd[0] == 's' && cmd[1] == 'e' && cmd[2] == 't' &&
+             cmd[3] == 't' && cmd[4] == 'i' && cmd[5] == 'm' &&
+             cmd[6] == 'e' && cmd[7] == 'o' && cmd[8] == 'u' &&
+             cmd[9] == 't' && (cmd[10] == '\0' || cmd[10] == ' '))
+    {
+        const char *p = skip_spaces(cmd + 10);
+        if (*p == '\0') {
+            uart_puts("Usage: settimeout <seconds> <message>\n");
+            return;
+        }
+        int sec = simple_atoi(p);
+        while (*p && *p != ' ') p++;
+        p = skip_spaces(p);
+
+        char *slot = msg_pool[msg_pool_idx % MSG_POOL_COUNT];
+        msg_pool_idx++;
+        int i = 0;
+        while (*p && i < MSG_POOL_LEN - 1)
+            slot[i++] = *p++;
+        slot[i] = '\0';
+
+        add_timer(settimeout_cb, slot, (unsigned long)sec);
     }
     else
     {

@@ -6,18 +6,29 @@
 #include "fdt.h"
 #include "bootloader.h"
 #include "sbi.h"
+#include "timer.h"
 
 #define INITRD_BASE        0xa0200000
 #define STACK_SIZE         0x1000
 #define TIMER_INTERVAL_SEC 2
+#define MAX_TIMERS         16
 
 static unsigned long initrd_base = INITRD_BASE;
+static unsigned long timer_freq  = 10000000;
+unsigned long        boot_seconds = 0;
 
-// Timer state (also exported to shell.c via extern)
-static unsigned long timer_freq            = 10000000;
-unsigned long        boot_seconds          = 0;
-unsigned long        settimeout_deadline_sec = 0;
-unsigned long        settimeout_requested  = 0;
+struct timer_entry {
+    unsigned long deadline_ticks;
+    void (*callback)(void *);
+    void *arg;
+    int   active;
+};
+
+static struct timer_entry timer_queue[MAX_TIMERS];
+
+// Absolute tick value currently programmed into the hardware timer.
+// 0 means not programmed.
+static unsigned long timer_next_deadline = 0;
 
 static int local_hextoi(const char *s, int n) {
     int r = 0;
@@ -43,6 +54,58 @@ static int local_memcmp(const void *a, const void *b, int n) {
         x++; y++;
     }
     return 0;
+}
+
+static void reprogram_timer(void) {
+    unsigned long earliest = 0;
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!timer_queue[i].active) continue;
+        if (earliest == 0 || timer_queue[i].deadline_ticks < earliest)
+            earliest = timer_queue[i].deadline_ticks;
+    }
+    if (earliest == 0) return;
+    timer_next_deadline = earliest;
+    sbi_set_timer(earliest);
+}
+
+static void fire_expired_timers(unsigned long now) {
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (timer_queue[i].active && timer_queue[i].deadline_ticks <= now) {
+            timer_queue[i].active = 0;
+            timer_queue[i].callback(timer_queue[i].arg);
+        }
+    }
+}
+
+void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
+    unsigned long now;
+    asm volatile("rdtime %0" : "=r"(now));
+    unsigned long deadline = now + sec * timer_freq;
+
+    for (int i = 0; i < MAX_TIMERS; i++) {
+        if (!timer_queue[i].active) {
+            timer_queue[i].deadline_ticks = deadline;
+            timer_queue[i].callback       = callback;
+            timer_queue[i].arg            = arg;
+            timer_queue[i].active         = 1;
+            // Reprogram hardware if this deadline is earlier than current.
+            if (timer_next_deadline == 0 || deadline < timer_next_deadline) {
+                timer_next_deadline = deadline;
+                sbi_set_timer(deadline);
+            }
+            return;
+        }
+    }
+    uart_puts("add_timer: queue full\n");
+}
+
+static void boot_tick_cb(void *arg) {
+    (void)arg;
+    boot_seconds += TIMER_INTERVAL_SEC;
+    uart_puts("boot time: ");
+    uart_dec(boot_seconds);
+    uart_puts("\n");
+    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
 }
 
 static unsigned long get_timer_freq(const void *fdt) {
@@ -158,21 +221,10 @@ void do_trap(struct pt_regs *regs) {
 
         if (irq == SCAUSE_SUPERVISOR_TIMER) {
             unsigned long cur;
-
-            boot_seconds += TIMER_INTERVAL_SEC;
-            uart_puts("boot time: ");
-            uart_dec(boot_seconds);
-            uart_puts("\n");
-
-            // Check one-shot settimeout
-            if (settimeout_requested && boot_seconds >= settimeout_deadline_sec) {
-                uart_puts("Timeout!\n");
-                settimeout_requested = 0;
-            }
-
-            // Re-arm timer for next interval
             asm volatile("rdtime %0" : "=r"(cur));
-            sbi_set_timer(cur + (unsigned long)TIMER_INTERVAL_SEC * timer_freq);
+            timer_next_deadline = 0;
+            fire_expired_timers(cur);
+            reprogram_timer();
         } else if (irq == SCAUSE_SUPERVISOR_EXT) {
             uart_handle_external_irq();
         }
@@ -208,14 +260,12 @@ void start_kernel(unsigned long hartid, void *dtb) {
     // uart_interrupt_init(hartid);
 
     timer_freq = get_timer_freq(dtb);
-    unsigned long cur;
-    asm volatile("rdtime %0" : "=r"(cur));
-    sbi_set_timer(cur + (unsigned long)TIMER_INTERVAL_SEC * timer_freq);
 
     asm volatile("csrs sie, %0" :: "r"(1UL << 5));   // STIE: enable timer interrupt
     asm volatile("csrs sie, %0" :: "r"(1UL << 9));   // SEIE: enable external interrupts
     asm volatile("csrsi sstatus, 0x2");               // SIE: global interrupt enable
-    //uart_debug_dump_state();
+
+    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
 
     print_shell_prompt();
     uart_puts("boot time: 0\n");
