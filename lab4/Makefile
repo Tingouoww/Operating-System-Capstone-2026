@@ -7,6 +7,9 @@ CFLAGS = $(ARCHFLAGS) -mcmodel=medany -ffreestanding -nostdlib -g -Wall -Iinclud
 MKIMAGE ?= mkimage
 LINKER_SCRIPT ?= linker.ld
 QEMU_LINKER_SCRIPT ?= linker_qemu.ld
+ITS ?= kernel.its
+BOARD_DTB ?= x1_orangepi-rv2.dtb
+INITRAMFS ?= initramfs.cpio
 LDFLAGS = -T $(LINKER_SCRIPT)
 QEMU ?= qemu-system-riscv64
 TARGET = kernel
@@ -20,8 +23,8 @@ build:
 	$(LD) $(LDFLAGS) -o $(TARGET).elf $(OBJS)
 	$(OBJCOPY) -O binary $(TARGET).elf $(TARGET).bin
 
-fit: build
-	$(MKIMAGE) -f kernel.its $(FIT)
+fit: build $(ITS) $(BOARD_DTB) $(INITRAMFS)
+	$(MKIMAGE) -f $(ITS) $(FIT)
 
 board: fit
 
@@ -41,4 +44,4 @@ qemu-dts: qemu-dtb
 	dtc -I dtb -O dts qemu.dtb -o qemu.dts
 
 clean:
-	rm -f $(TARGET) $(TARGET).elf $(TARGET).bin $(PAYLOAD).elf $(PAYLOAD).bin $(FIT) $(OBJS) qemu.dtb qemu.dts
+	rm -f $(TARGET) $(TARGET).elf $(TARGET).bin $(FIT) $(OBJS) qemu.dtb qemu.dts
