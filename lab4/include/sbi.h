@@ -1,9 +1,14 @@
 #ifndef SBI_H
 #define SBI_H
 
+#include <stdint.h>
+
 #define SBI_EXT_SET_TIMER 0x0
 #define SBI_EXT_SHUTDOWN 0x8
 #define SBI_EXT_BASE 0x10
+
+#define SBI_EXT_TIME           0x54494D45
+#define SBI_EXT_TIME_SET_TIMER 0
 
 enum sbi_ext_base_fid
 {
@@ -34,5 +39,6 @@ long sbi_get_spec_version(void);
 long sbi_probe_extension(int extid);
 long sbi_get_impl_id(void);
 long sbi_get_impl_version(void);
+long sbi_set_timer(uint64_t stime_value);
 
 #endif

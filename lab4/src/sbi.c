@@ -69,3 +69,9 @@ long sbi_get_impl_version(void)
     struct sbiret ret = sbi_ecall(SBI_EXT_BASE, SBI_EXT_BASE_GET_IMP_VERSION, 0, 0, 0, 0, 0, 0);
     return ret.value;
 }
+
+long sbi_set_timer(uint64_t stime_value) {
+    struct sbiret ret = sbi_ecall(0, SBI_EXT_TIME_SET_TIMER,
+                                  stime_value, 0, 0, 0, 0, 0);
+    return ret.error;
+}

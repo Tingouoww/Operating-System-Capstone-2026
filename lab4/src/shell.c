@@ -4,7 +4,9 @@
 #include "bootloader.h"
 #include "cpio.h"
 #include "fdt.h"
+#include "mem_allocator.h"
 #include "mem_allocator_test.h"
+#include "string.h"
 
 #include <stdint.h>
 
@@ -88,7 +90,7 @@ void print_help()
     uart_puts("  cat <file> - print file content from initramfs.\n");
     //uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
     uart_puts("  test_alloc - run memory allocator test.\n");
-    uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
+    //uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
     uart_puts("  exec <file> - execute user program from initramfs in U-mode.\n");
 }
 
