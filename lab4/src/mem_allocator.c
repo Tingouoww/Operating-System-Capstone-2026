@@ -181,7 +181,7 @@ static void free_area_add(struct buddy_allocator *buddy, unsigned long idx, unsi
     set_block_head(buddy, idx, order, 1);
     list_add_tail(&frame->free_list, &buddy->free_area[order]);
     buddy->free_area_blocks[order]++;
-    log_free_area_add(idx, order);
+    //log_free_area_add(idx, order);
 }
 
 /*
@@ -516,7 +516,7 @@ void mem_allocator_init(const void *fdt)
                       (unsigned long)frame_array,
                       frame_array_size);
     buddy_build_free_areas();
-    log_free_list_state("init");
+    //log_free_list_state("init");
     buddy_ready = 1;
 }
 
