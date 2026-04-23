@@ -7,6 +7,7 @@
 #include "bootloader.h"
 #include "sbi.h"
 #include "timer.h"
+#include "task.h"
 
 #define INITRD_BASE 0xa0200000
 #define STACK_SIZE  0x1000
@@ -91,12 +92,16 @@ struct pt_regs {
 #define SCAUSE_SUPERVISOR_EXT   9
 
 void do_trap(struct pt_regs *regs) {
+    int should_run_tasks = 0;
+
     if (regs->scause & SCAUSE_IRQ_FLAG) {
         unsigned long irq = regs->scause & ~SCAUSE_IRQ_FLAG;
-        if (irq == SCAUSE_SUPERVISOR_TIMER)
+        if (irq == SCAUSE_SUPERVISOR_TIMER) {
             timer_handle_irq();
-        else if (irq == SCAUSE_SUPERVISOR_EXT)
+            should_run_tasks = 1;
+        } else if (irq == SCAUSE_SUPERVISOR_EXT) {
             uart_handle_external_irq();
+        }
     } else {
         uart_puts("=== S-Mode trap ===\n");
         uart_puts("scause: "); uart_dec(regs->scause); uart_puts("\n");
@@ -105,6 +110,15 @@ void do_trap(struct pt_regs *regs) {
         if (regs->scause == 8)
             regs->sepc += 4;
     }
+
+    if (should_run_tasks)
+        run_tasks();
+}
+
+static void test_task_cb(void *arg) {
+    uart_puts("[Task] Executing Priority ");
+    uart_puts((const char *)arg);
+    uart_puts("\n");
 }
 
 void start_kernel(unsigned long hartid, void *dtb) {
@@ -124,6 +138,11 @@ void start_kernel(unsigned long hartid, void *dtb) {
     asm volatile("csrsi sstatus, 0x2");              // SIE
 
     timer_init(dtb);
+
+    add_task(test_task_cb, "1", 1);
+    add_task(test_task_cb, "3", 3);
+    add_task(test_task_cb, "2", 2);
+    run_tasks();
 
     print_shell_prompt();
     uart_puts("boot time: 0\n");
