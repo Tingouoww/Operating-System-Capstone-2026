@@ -128,15 +128,19 @@ void start_kernel(unsigned long hartid, void *dtb) {
 
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
+    uart_puts("[boot] hartid="); uart_dec(hartid); uart_puts("\n");
     mem_allocator_init(dtb);
     shell_init(dtb);
     bootloader_init(hartid, dtb);
     initrd_base = fdt_get_initrd_start_or_default(dtb, INITRD_BASE);
+    uart_interrupt_init(hartid);
 
     asm volatile("csrs sie, %0" :: "r"(1UL << 5));  // STIE
     asm volatile("csrs sie, %0" :: "r"(1UL << 9));  // SEIE
     asm volatile("csrsi sstatus, 0x2");              // SIE
 
+    //uart_debug_dump_state();
+    
     timer_init(dtb);
 
     add_task(test_task_cb, "1", 1);

@@ -1,5 +1,6 @@
 #include "uart.h"
 #include "fdt.h"
+#include "sbi.h"
 
 uintptr_t uart_base;
 
@@ -12,6 +13,7 @@ uintptr_t uart_base;
 #define UART_IER ((volatile unsigned char *)(uart_base + 0x1))
 #define UART_IIR ((volatile unsigned char *)(uart_base + 0x2))
 #define UART_FCR ((volatile unsigned char *)(uart_base + 0x2))
+#define UART_MCR ((volatile unsigned char *)(uart_base + 0x4))
 #else
 /* PXA UART (ky,pxa-uart): reg-io-width=4 requires 32-bit word accesses */
 #define UART_RBR ((volatile uint32_t *)(uart_base + 0x0))
@@ -20,11 +22,12 @@ uintptr_t uart_base;
 #define UART_IER ((volatile uint32_t *)(uart_base + 0x4))
 #define UART_IIR ((volatile uint32_t *)(uart_base + 0x8))
 #define UART_FCR ((volatile uint32_t *)(uart_base + 0x8))
+#define UART_MCR ((volatile uint32_t *)(uart_base + 0x10))
 #endif
 
 #define LSR_DR   (1 << 0)   // Data Ready (RX byte available)
 #define LSR_TDRQ (1 << 5)   // TX Data Request (THR empty)
-
+#define MCR_OUT2 (1 << 3)
 // ─── PLIC configuration ──────────────────────────────────────────────────────
 
 #ifdef QEMU
@@ -160,18 +163,15 @@ void uart_init(const void *fdt) {
 // ─── uart_interrupt_init ─────────────────────────────────────────────────────
 /* 把 UART 從原本的 polling 模式，切換成 中斷驅動 + ring buffer */
 void uart_interrupt_init(unsigned long hartid) {
-    // head -> 寫入位置
-    // tail -> 清出位置
-    // head == tail 表示 buffer 為空
-    rx_ring.head = rx_ring.tail = 0; // 接收緩衝區清空
-    tx_ring.head = tx_ring.tail = 0; // 傳送緩衝區清空
+    rx_ring.head = rx_ring.tail = 0;
+    tx_ring.head = tx_ring.tail = 0;
     uart_plic_ctx = uart_plic_context_for_hart(hartid);
 
-    // Enable FIFO, reset RX/TX FIFO, RX trigger = 1 byte
-    *UART_FCR = (1 << 0) | (1 << 1) | (1 << 2);
-
-    // Enable UART RX interrupt (bit 0 = RBFI) 接收端有資料時觸發中斷
+    // Enable UART RX interrupt (bit 0 = RBFI)
     *UART_IER |= 0x1;
+
+    // DTR (bit 3) — required by ky,pxa-uart to enable interrupt output
+    *UART_MCR |= MCR_OUT2;
 
     // Configure PLIC: priority > 0, source enabled, threshold = 0
     plic_set_priority(UART_IRQ, 1);
@@ -235,16 +235,19 @@ void uart_handle_external_irq(void) {
 
 char uart_getc(void) {
     if (!uart_async) {
-        while ((*UART_LSR & LSR_DR) == 0) ;
+        // polling 模式：直接等 LSR DR 位元
+        while (!(*UART_LSR & LSR_DR))
+            ;
         char c = (char)*UART_RBR;
-        return c == '\r' ? '\n' : c;
+        return (c == '\r') ? '\n' : c;
     }
 
-    while (ring_empty(&rx_ring)) ;
+    // 中斷模式：自旋等 ring buffer 非空
+    while (ring_empty(&rx_ring))
+        __asm__ volatile("wfi"); 
 
     return ring_pop(&rx_ring);
 }
-
 // ─── uart_putc ───────────────────────────────────────────────────────────────
 
 void uart_putc(char c) {
