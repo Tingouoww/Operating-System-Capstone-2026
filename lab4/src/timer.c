@@ -20,6 +20,9 @@ static unsigned long timer_next_deadline = 0;
 unsigned long boot_seconds = 0;
 
 static void reprogram_timer(void) {
+    // Hardware timer tracks only one deadline, so pick the earliest active
+    // software timer and ask OpenSBI to interrupt us at that time.
+
     unsigned long earliest = 0;
     for (int i = 0; i < MAX_TIMERS; i++) {
         if (!timer_queue[i].active) continue;
@@ -32,6 +35,7 @@ static void reprogram_timer(void) {
 }
 
 static void fire_expired_timers(unsigned long now) {
+    // 執行所有已到期 timer，而且先設 active = 0，這樣 callback 裡如果又呼叫 add_timer()，不會卡在同一個舊 timer slot
     for (int i = 0; i < MAX_TIMERS; i++) {
         if (timer_queue[i].active && timer_queue[i].deadline_ticks <= now) {
             timer_queue[i].active = 0;
@@ -41,9 +45,11 @@ static void fire_expired_timers(unsigned long now) {
 }
 
 void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
+    /* 把一個 callback 放進 timer_queue，設定它在 sec 秒後到期， 
+    如果這個 timer 是目前最早到期的 timer， 就呼叫 sbi_set_timer(deadline) 重新設定硬體 timer。 */
     unsigned long now;
-    asm volatile("rdtime %0" : "=r"(now));
-    unsigned long deadline = now + sec * timer_freq;
+    asm volatile("rdtime %0" : "=r"(now)); // 用rdtime 讀目前的硬體 timer counter(tick)
+    unsigned long deadline = now + sec * timer_freq; // tick 
 
     for (int i = 0; i < MAX_TIMERS; i++) {
         if (!timer_queue[i].active) {
@@ -52,6 +58,7 @@ void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
             timer_queue[i].arg            = arg;
             timer_queue[i].active         = 1;
             if (timer_next_deadline == 0 || deadline < timer_next_deadline) {
+                // 設最早到期的為下一個 interrupt
                 timer_next_deadline = deadline;
                 sbi_set_timer(deadline);
             }
@@ -61,6 +68,14 @@ void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
     uart_puts("add_timer: queue full\n");
 }
 
+/* timer interrupt 發生時真正處理 software timers 的函式 */
+/*
+    timer 到期
+    -> CPU 產生 supervisor timer interrupt
+    -> stvec / handle_exception
+    -> do_trap()
+    -> timer_handle_irq()
+*/
 void timer_handle_irq(void) {
     unsigned long cur;
     asm volatile("rdtime %0" : "=r"(cur));
@@ -78,6 +93,7 @@ static void boot_tick_cb(void *arg) {
     add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
 }
 
+/* 讀 timebase-frequency: 代表 rdtime 每秒增加幾個 tick */
 void timer_init(const void *fdt) {
     int len, off;
     const unsigned char *p;
@@ -102,5 +118,5 @@ void timer_init(const void *fdt) {
     }
 
 done:
-    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
+    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC); // 註冊 2 秒後執行的 callback(boot_tick_cb)
 }

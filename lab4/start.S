@@ -10,7 +10,7 @@ clear_bss:
     blt a3, a4, clear_bss
 clear_bss_done:
     la a2, handle_exception
-    csrw stvec, a2 #stvec: RISC-V 的 trap 向量暫存器
+    csrw stvec, a2  # stvec: 存 S-mode trap handler 的入口位址
     la sp, _end
     tail start_kernel
 
@@ -22,12 +22,13 @@ handle_exception:
      * save user sp to sscratch
      */
     # csrrw: Control and Status Register Read/Write
-    csrrw sp, sscratch, sp  #sscratch : 避免覆寫使用者暫存器
-    bnez sp, save_context
+    csrrw sp, sscratch, sp  # 交換 sp 和 sscratch, sscratch : 避免覆寫使用者暫存器, 完成後 => sp = kernel_sp, sscratch = user_ap
+    bnez sp, save_context # 如果 trap 是從 S-mode 來，sscratch 是 0，交換後 sp 會變 0, 用 bnez sp 判斷失敗
 
-    csrr sp, sscratch
+    csrr sp, sscratch 
 save_context:
     /* Save context */
+    /* 把 trap 發生當下的 CPU 狀態存到 kernel stack 上，形成一個 trap frame，讓 C 函式 do_trap() 可以安全處理 trap，處理完再恢復回去。*/
     addi sp, sp, -8 * 35
     sd ra,  8 *  0(sp)
     sd gp,  8 *  2(sp)
@@ -60,10 +61,10 @@ save_context:
     sd t5,  8 * 29(sp)
     sd t6,  8 * 30(sp)
     csrr s0, sscratch
-    csrr s1, sepc
-    csrr s2, sstatus
-    csrr s3, scause
-    csrr s4, stval
+    csrr s1, sepc # trap 發生時的 PC，(CPU 正在處理哪一個位址的指令)
+    csrr s2, sstatus  #  trap 發生時相關狀態，包含 SPP/SPIE 等
+    csrr s3, scause # trap 原因，例如 U-mode ecall 是 8 (746-747)
+    csrr s4, stval # trap 額外資訊，例如 fault address，ecall 通常是 0
     sd s0,  8 *  1(sp)
     sd s1,  8 * 31(sp)
     sd s2,  8 * 32(sp)
@@ -71,8 +72,8 @@ save_context:
     sd s4,  8 * 34(sp)
 
     csrw sscratch, zero
-    move a0, sp
-    call do_trap
+    move a0, sp # 第一個參數放在 a0
+    call do_trap #do_trap(sp) , sp 指向剛建立的 trap frame
 
 ret_from_exception:
     ld s0,  8 * 32(sp)

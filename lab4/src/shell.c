@@ -23,6 +23,8 @@ static void settimeout_cb(void *arg) {
 }
 
 static int simple_atoi(const char *s) {
+    // Parse the leading decimal digits, used for commands like
+    // settimeout <seconds> <message>.
     int n = 0;
     while (*s >= '0' && *s <= '9')
         n = n * 10 + (*s++ - '0');
@@ -203,16 +205,16 @@ void run_command(const char *cmd)
              cmd[6] == 'e' && cmd[7] == 'o' && cmd[8] == 'u' &&
              cmd[9] == 't' && (cmd[10] == '\0' || cmd[10] == ' '))
     {
-        const char *p = skip_spaces(cmd + 10);
+        const char *p = skip_spaces(cmd + 10); //指向 "settimeout" 後面的字元, 跳過空白 -> p 移到數字
         if (*p == '\0') {
             uart_puts("Usage: settimeout <seconds> <message>\n");
             return;
         }
         int sec = simple_atoi(p);
-        while (*p && *p != ' ') p++;
-        p = skip_spaces(p);
+        while (*p && *p != ' ') p++; // 往後走直到遇到空白 (跳過數字)
+        p = skip_spaces(p); // 跳過空白
 
-        char *slot = msg_pool[msg_pool_idx % MSG_POOL_COUNT];
+        char *slot = msg_pool[msg_pool_idx % MSG_POOL_COUNT]; // 循環使用 buffer
         msg_pool_idx++;
         int i = 0;
         while (*p && i < MSG_POOL_LEN - 1)

@@ -194,7 +194,7 @@ static void free_area_remove(struct frame *frame, unsigned long idx, unsigned in
     INIT_LIST_HEAD(&frame->free_list);
     frame->is_free = 0;
     buddy_allocator.free_area_blocks[order]--;
-    log_free_area_remove(idx, order);
+    // log_free_area_remove(idx, order);
 }
 
 /* 初始化 chunk page 狀態 */
@@ -774,7 +774,7 @@ void * buddy_alloc(unsigned int order)
      * 以符合 Advanced Exercise 要求的 O(log n)。
      */
     set_block_head(&buddy_allocator, idx, order, 0);
-    log_page_alloc_event(idx, order);
+    //log_page_alloc_event(idx, order);
     log_free_list_state("allocate");
 
     return (void *)(buddy_allocator.base_addr + idx * PAGE_SIZE);
