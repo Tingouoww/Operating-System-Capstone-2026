@@ -19,7 +19,7 @@ uintptr_t uart_base;
 #define UART_RBR ((volatile uint32_t *)(uart_base + 0x0))
 #define UART_THR ((volatile uint32_t *)(uart_base + 0x0))
 #define UART_LSR ((volatile uint32_t *)(uart_base + 0x14))
-#define UART_IER ((volatile uint32_t *)(uart_base + 0x4))
+#define UART_IER ((volatile uint32_t *)(uart_base + 0x4)) // Interrupt Enable Register
 #define UART_IIR ((volatile uint32_t *)(uart_base + 0x8))
 #define UART_FCR ((volatile uint32_t *)(uart_base + 0x8))
 #define UART_MCR ((volatile uint32_t *)(uart_base + 0x10))
@@ -28,6 +28,8 @@ uintptr_t uart_base;
 #define LSR_DR   (1 << 0)   // Data Ready (RX byte available)
 #define LSR_TDRQ (1 << 5)   // TX Data Request (THR empty)
 #define MCR_OUT2 (1 << 3)
+#define IER_RX   (1 << 0)   // Received Data Available Interrupt
+#define IER_TX   (1 << 1)   // Transmitter Holding Register Empty Interrupt
 // ─── PLIC configuration ──────────────────────────────────────────────────────
 
 #ifdef QEMU
@@ -35,7 +37,7 @@ uintptr_t uart_base;
 #define UART_IRQ  10
 #else
 #define PLIC_BASE 0xe0000000UL
-#define UART_IRQ  42
+#define UART_IRQ  42 // Uart0 interrupt source (117)
 #endif
 
 /* PLIC 相關 register offset 要查 spec */
@@ -56,6 +58,7 @@ static void plic_set_threshold(unsigned int thr) {
 }
 
 static unsigned int plic_claim(void) {
+    // 從 PLIC 取得目前要處理的 interrupt source ID
     return *(volatile unsigned int *)(PLIC_BASE + 0x200004 + 0x1000 * uart_plic_ctx);
 }
 
@@ -78,7 +81,7 @@ static unsigned int plic_get_threshold(void) {
 
 // ─── ring buffers ────────────────────────────────────────────────────────────
 
-#define RING_SIZE 256
+#define RING_SIZE 4096
 
 /* circular queue */
 typedef struct {
@@ -111,6 +114,13 @@ static unsigned int uart_plic_context_for_hart(unsigned long hartid) {
 
 static char uart_normalize_rx_char(char c) {
     return c == '\r' ? '\n' : c;
+}
+
+static void uart_tx_send_one(void) {
+    if (!ring_empty(&tx_ring))
+        *UART_THR = ring_pop(&tx_ring);
+    else
+        *UART_IER &= ~IER_TX;
 }
 
 static void uart_drain_rx_fifo(void) {
@@ -167,8 +177,8 @@ void uart_interrupt_init(unsigned long hartid) {
     tx_ring.head = tx_ring.tail = 0;
     uart_plic_ctx = uart_plic_context_for_hart(hartid);
 
-    // Enable UART RX interrupt (bit 0 = RBFI)
-    *UART_IER |= 0x1;
+    // Enable UART RX interrupt only; TX interrupt opened on demand
+    *UART_IER |= IER_RX;
 
     // DTR (bit 3) — required by ky,pxa-uart to enable interrupt output
     *UART_MCR |= MCR_OUT2;
@@ -224,8 +234,13 @@ void uart_debug_dump_state(void) {
 void uart_handle_external_irq(void) {
     unsigned int irq = plic_claim();
 
-    if (irq == UART_IRQ)
-        uart_drain_rx_fifo();
+    if (irq == UART_IRQ) {
+        unsigned int iir = *UART_IIR & 0x0f;
+        if (iir == 0x04 || iir == 0x0c)    // RX data available / RX timeout
+            uart_drain_rx_fifo();
+        else if (iir == 0x02)               // THRE: TX holding register empty
+            uart_tx_send_one();
+    }
 
     if (irq)
         plic_complete(irq);
@@ -253,9 +268,17 @@ char uart_getc(void) {
 void uart_putc(char c) {
     if (c == '\n') uart_putc('\r');
 
-    unsigned int timeout = 100000;
-    while ((*UART_LSR & LSR_TDRQ) == 0 && --timeout) ;
-    *UART_THR = c;
+    if (!uart_async) {
+        unsigned int timeout = 100000;
+        while ((*UART_LSR & LSR_TDRQ) == 0 && --timeout);
+        *UART_THR = c;
+        return;
+    }
+
+    if (!ring_full(&tx_ring))
+        ring_push(&tx_ring, c);
+
+    *UART_IER |= IER_TX;
 }
 
 // ─── uart_puts ───────────────────────────────────────────────────────────────
