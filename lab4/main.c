@@ -26,7 +26,6 @@ static int local_hextoi(const char *s, int n) {
     return r;
 }
 
-/* 把 n 向上對齊到 byte 的倍數 */
 static int local_align(int n, int byte) {
     return (n + byte - 1) & ~(byte - 1);
 }
@@ -38,47 +37,42 @@ static int local_memcmp(const void *a, const void *b, int n) {
         if (*x != *y) return *x - *y;
         x++; y++;
     }
-    return 0; // compare 一樣會回傳 0
+    return 0;
 }
 
 int exec(const char *filename) {
     char *p = (char *)initrd_base;
     while (local_memcmp(p + sizeof(struct cpio_newc_header), "TRAILER!!!", 10)) {
-        // [cpio header][filename][padding][file data][padding]
         struct cpio_newc_header *hdr = (struct cpio_newc_header *)p;
         int namesize = local_hextoi(hdr->c_namesize, 8);
         int filesize = local_hextoi(hdr->c_filesize, 8);
         int headsize = local_align(sizeof(struct cpio_newc_header) + namesize, 4);
         int datasize = local_align(filesize, 4);
-        // memory compare 比較 兩塊記憶體的 n bytes 是否相同
         if (!local_memcmp(p + sizeof(struct cpio_newc_header), filename, namesize)) {
-            unsigned long kernel_sp; // 存目前 kernel 正在用的 stack pointer。之後 trap 從 U-mode 回來時，要恢復使用 kernel stack。
-            // 配置一頁 user stack，保存目前 kernel stack 到 sscratch
-            unsigned long user_sp    = (unsigned long)buddy_alloc(0) + STACK_SIZE; // stack 通常往低位址長，所以 stack pointer 要設在頁的最上面
+            unsigned long kernel_sp;
+            unsigned long user_sp    = (unsigned long)buddy_alloc(0) + STACK_SIZE;
             unsigned long user_entry = (unsigned long)(p + headsize);
-            unsigned long sstatus; // 記錄 S-mode trap , interrupt, privilege return 有關狀態 (739)
+            unsigned long sstatus;
 
             asm volatile("mv %0, sp"        : "=r"(kernel_sp));
             asm volatile("csrr %0, sstatus" : "=r"(sstatus));
-            
-            sstatus &= ~(1UL << 8);  // SPP=0: sret returns to U-mode
-            sstatus |=  (1UL << 5);  // SPIE=1: enable interrupts in U-mode (決定進入 U-mode 後是否開啟中斷)
 
-            // 進入 user mode 前先放 sscratch = kernel_sp, sp = user_sp
-            // 避免 kernel handler 直接用 user_sp 存 reg
+            sstatus &= ~(1UL << 8);  // SPP=0: sret returns to U-mode
+            sstatus |=  (1UL << 5);  // SPIE=1: enable interrupts in U-mode
+
             asm volatile(
                 "csrw sscratch, %0\n"
                 "mv sp, %1\n"
-                "csrw sepc, %2\n" // sret 會跳到 sepc
-                "csrw sstatus, %3\n" // 修改過後的 sstatus 放回 sstatus
-                "sret\n" // 從 S-mode return 到指定 sepc 位址
+                "csrw sepc, %2\n"
+                "csrw sstatus, %3\n"
+                "sret\n"
                 :
                 : "r"(kernel_sp), "r"(user_sp), "r"(user_entry), "r"(sstatus)
                 : "memory");
 
-            __builtin_unreachable(); // 這裡不該被執行
+            __builtin_unreachable();
         }
-        p += headsize + datasize; // 如果目前 entry 不是目標檔案就跳到下一個 CPIO entry
+        p += headsize + datasize;
     }
     return -1;
 }
@@ -93,43 +87,71 @@ struct pt_regs {
     unsigned long sepc, sstatus, scause, stval;
 };
 
-// 746-747
 #define SCAUSE_IRQ_FLAG         (1UL << 63)
 #define SCAUSE_SUPERVISOR_TIMER 5
 #define SCAUSE_SUPERVISOR_EXT   9
 
 void do_trap(struct pt_regs *regs) {
-    int should_run_tasks = 0;
-
-    // scause -> 判斷 trap 類型是 interrupt 還是 exception
-    // 第 63 bit (746 - 747)
     if (regs->scause & SCAUSE_IRQ_FLAG) {
-        // async
-        unsigned long irq = regs->scause & ~SCAUSE_IRQ_FLAG; // 把 scause 最高 bit 清掉才知道是哪種 interrupt
-        if (irq == SCAUSE_SUPERVISOR_TIMER) {
+        unsigned long irq = regs->scause & ~SCAUSE_IRQ_FLAG;
+        if (irq == SCAUSE_SUPERVISOR_TIMER)
             timer_handle_irq();
-            should_run_tasks = 1;
-        } else if (irq == SCAUSE_SUPERVISOR_EXT) {
+        else if (irq == SCAUSE_SUPERVISOR_EXT)
             uart_handle_external_irq();
-        }
-    } else {
-        // sync
-        uart_puts("=== S-Mode trap ===\n");
-        uart_puts("scause: "); uart_dec(regs->scause); uart_puts("\n"); // 8
-        uart_puts("sepc: ");   uart_hex(regs->sepc);   uart_puts("\n"); // trap 發生時的 PC
-        uart_puts("stval: ");  uart_dec(regs->stval);  uart_puts("\n"); // trap value
-        if (regs->scause == 8)
-            regs->sepc += 4; // ecall 是 4-byte instruction
-    }
-
-    if (should_run_tasks)
         run_tasks();
+    } else {
+        uart_puts("=== S-Mode trap ===\n");
+        uart_puts("scause: "); uart_dec(regs->scause); uart_puts("\n");
+        uart_puts("sepc: ");   uart_hex(regs->sepc);   uart_puts("\n");
+        uart_puts("stval: ");  uart_dec(regs->stval);  uart_puts("\n");
+        if (regs->scause == 8)
+            regs->sepc += 4;
+    }
 }
 
-static void test_task_cb(void *arg) {
-    uart_puts("[Task] Executing Priority ");
-    uart_puts((const char *)arg);
-    uart_puts("\n");
+int priority_set[4];
+
+void p1_callback(){
+    uart_puts("P1 start\n");
+    uart_puts("P1 end\n");
+}
+
+void p3_callback(){
+    uart_puts("P3 start\n");
+    add_task(p1_callback, NULL, priority_set[0]);
+    add_timer(NULL, NULL, 0);
+    uart_puts("P3 end\n");
+}
+
+void p2_callback(){
+    uart_puts("P2 start\n");
+    add_task(p3_callback, NULL, priority_set[2]);
+    add_timer(NULL, NULL, 0);
+    uart_puts("P2 end\n");
+}
+
+void p4_callback(){
+    uart_puts("P4 start\n");
+    add_task(p2_callback, NULL, priority_set[1]);
+    add_timer(NULL, NULL, 0);
+    uart_puts("P4 end\n");
+}
+
+void test_func(){
+    int from_small_to_big = 0; // set to 0 if the task with a smaller number has a higher priority
+    if(from_small_to_big){
+        priority_set[0] = 10;
+        priority_set[1] = 20;
+        priority_set[2] = 30;
+        priority_set[3] = 40;
+    }else{
+        priority_set[0] = 40;
+        priority_set[1] = 30;
+        priority_set[2] = 20;
+        priority_set[3] = 10;
+    }
+
+    add_task(p4_callback, NULL, priority_set[3]);
 }
 
 void start_kernel(unsigned long hartid, void *dtb) {
@@ -139,27 +161,17 @@ void start_kernel(unsigned long hartid, void *dtb) {
 
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
-    uart_puts("[boot] hartid="); uart_dec(hartid); uart_puts("\n");
     mem_allocator_init(dtb);
     shell_init(dtb);
     bootloader_init(hartid, dtb);
     initrd_base = fdt_get_initrd_start_or_default(dtb, INITRD_BASE);
-    uart_interrupt_init(hartid);
 
-    // 743-744
     asm volatile("csrs sie, %0" :: "r"(1UL << 5));  // STIE
     asm volatile("csrs sie, %0" :: "r"(1UL << 9));  // SEIE
-    asm volatile("csrsi sstatus, 0x2");              // SIE 打開 S-mode 的整體 interrupt 總開關
+    asm volatile("csrsi sstatus, 0x2");              // SIE
 
-    //uart_debug_dump_state();
-    
     timer_init(dtb);
-
-    add_task(test_task_cb, "1", 1);
-    add_task(test_task_cb, "3", 3);
-    add_task(test_task_cb, "2", 2);
-    run_tasks();
-
+    add_timer(test_func, NULL, 0);
     print_shell_prompt();
     uart_puts("boot time: 0\n");
     while (1) {
