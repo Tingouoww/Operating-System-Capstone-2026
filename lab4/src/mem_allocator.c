@@ -14,11 +14,11 @@ static const void *allocator_fdt;
 static unsigned long startup_alloc_cursor;
 
 /* ----- Prototype -----*/
-static void log_block_range(unsigned long idx, unsigned int order);
-static void log_free_area_add(unsigned long idx, unsigned int order);
-static void log_free_area_remove(unsigned long idx, unsigned int order);
+// static void log_block_range(unsigned long idx, unsigned int order);
+// static void log_free_area_add(unsigned long idx, unsigned int order);
+// static void log_free_area_remove(unsigned long idx, unsigned int order);
 static void log_next_page_addr(unsigned int order);
-static void log_page_alloc_event(unsigned long idx, unsigned int order);
+// static void log_page_alloc_event(unsigned long idx, unsigned int order);
 static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order);
 static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order);
 static void log_memory_region(const char *label, unsigned long start, unsigned long size);
@@ -919,38 +919,38 @@ void free(void *ptr)
 /* ------ LOG ------*/
 
 /* 輸出 block 的 page 範圍，方便 demo 時解釋 block 邊界。 */
-static void log_block_range(unsigned long idx, unsigned int order)
-{
-    uart_puts("Range of pages: [");
-    uart_dec(idx);
-    uart_puts(", ");
-    uart_dec(idx + block_pages(order) - 1);
-    uart_puts("]");
-}
+// static void log_block_range(unsigned long idx, unsigned int order)
+// {
+//     uart_puts("Range of pages: [");
+//     uart_dec(idx);
+//     uart_puts(", ");
+//     uart_dec(idx + block_pages(order) - 1);
+//     uart_puts("]");
+// }
 
-static void log_free_area_add(unsigned long idx, unsigned int order)
-{
-    uart_puts("[+] Add");
-    uart_puts(" page ");
-    uart_dec(idx);
-    uart_puts(" to order ");
-    uart_dec(order);
-    uart_puts(". ");
-    log_block_range(idx, order);
-    uart_puts("\n");
-}
+// static void log_free_area_add(unsigned long idx, unsigned int order)
+// {
+//     uart_puts("[+] Add");
+//     uart_puts(" page ");
+//     uart_dec(idx);
+//     uart_puts(" to order ");
+//     uart_dec(order);
+//     uart_puts(". ");
+//     log_block_range(idx, order);
+//     uart_puts("\n");
+// }
 
-static void log_free_area_remove(unsigned long idx, unsigned int order)
-{
-    uart_puts("[-] Remove");
-    uart_puts(" page ");
-    uart_dec(idx);
-    uart_puts(" from order ");
-    uart_dec(order);
-    uart_puts(". ");
-    log_block_range(idx, order);
-    uart_puts("\n");
-}
+// static void log_free_area_remove(unsigned long idx, unsigned int order)
+// {
+//     uart_puts("[-] Remove");
+//     uart_puts(" page ");
+//     uart_dec(idx);
+//     uart_puts(" from order ");
+//     uart_dec(order);
+//     uart_puts(". ");
+//     log_block_range(idx, order);
+//     uart_puts("\n");
+// }
 
 static void log_next_page_addr(unsigned int order)
 {
@@ -969,20 +969,20 @@ static void log_next_page_addr(unsigned int order)
                                (unsigned long)(next_frame - buddy_allocator.frames)));
 }
 
-static void log_page_alloc_event(unsigned long idx, unsigned int order)
-{
-    uart_puts("[Page] Allocate ");
-    uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
-    uart_puts(" at order ");
-    uart_dec(order);
-    uart_puts(", page ");
-    uart_dec(idx);
-    uart_puts(". Next address at order ");
-    uart_dec(order);
-    uart_puts(": ");
-    log_next_page_addr(order);
-    uart_puts("\n");
-}
+// static void log_page_alloc_event(unsigned long idx, unsigned int order)
+// {
+//     uart_puts("[Page] Allocate ");
+//     uart_hex(frame_idx_to_addr(&buddy_allocator, idx));
+//     uart_puts(" at order ");
+//     uart_dec(order);
+//     uart_puts(", page ");
+//     uart_dec(idx);
+//     uart_puts(". Next address at order ");
+//     uart_dec(order);
+//     uart_puts(": ");
+//     log_next_page_addr(order);
+//     uart_puts("\n");
+// }
 
 static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
 {
