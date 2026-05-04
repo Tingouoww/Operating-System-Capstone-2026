@@ -2,9 +2,10 @@
 #include "uart.h"
 #include "sbi.h"
 #include "fdt.h"
+#include "task.h"
 
 #define TIMER_INTERVAL_SEC 2
-#define MAX_TIMERS         16
+#define MAX_TIMERS         64
 
 struct timer_entry {
     unsigned long deadline_ticks;
@@ -39,7 +40,8 @@ static void fire_expired_timers(unsigned long now) {
     for (int i = 0; i < MAX_TIMERS; i++) {
         if (timer_queue[i].active && timer_queue[i].deadline_ticks <= now) {
             timer_queue[i].active = 0;
-            timer_queue[i].callback(timer_queue[i].arg);
+            if (timer_queue[i].callback)
+                timer_queue[i].callback(timer_queue[i].arg);
         }
     }
 }
@@ -68,6 +70,12 @@ void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
     uart_puts("add_timer: queue full\n");
 }
 
+static void run_expired_timers(void *arg){
+    unsigned long now = (unsigned long) arg;
+    fire_expired_timers(now);
+    reprogram_timer();
+}
+
 /* timer interrupt 發生時真正處理 software timers 的函式 */
 /*
     timer 到期
@@ -80,8 +88,8 @@ void timer_handle_irq(void) {
     unsigned long cur;
     asm volatile("rdtime %0" : "=r"(cur));
     timer_next_deadline = 0;
-    fire_expired_timers(cur);
-    reprogram_timer();
+    sbi_set_timer(-1UL); // 先把 timecmp 推到極大值，避免 timer interrupt 在 run_tasks 開中斷時持續觸發
+    add_task(run_expired_timers, (void *)cur, 0); // priority = 0, 最低, 由 run_tasks() 執行
 }
 
 static void boot_tick_cb(void *arg) {
