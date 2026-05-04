@@ -256,10 +256,8 @@ char uart_getc(void) {
         char c = (char)*UART_RBR;
         return (c == '\r') ? '\n' : c;
     }
-
-    // 中斷模式：自旋等 ring buffer 非空
     while (ring_empty(&rx_ring))
-        __asm__ volatile("wfi"); 
+        __asm__ volatile("wfi");
 
     return ring_pop(&rx_ring);
 }
