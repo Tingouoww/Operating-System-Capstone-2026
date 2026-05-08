@@ -92,13 +92,10 @@ void timer_handle_irq(void) {
     add_task(run_expired_timers, (void *)cur, 0); // priority = 0, 最低, 由 run_tasks() 執行
 }
 
-static void boot_tick_cb(void *arg) {
+static void preempt_tick_cb(void *arg) {
     (void)arg;
-    boot_seconds += TIMER_INTERVAL_SEC;
-    uart_puts("boot time: ");
-    uart_dec(boot_seconds);
-    uart_puts("\n");
-    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC);
+    schedule();
+    add_timer(preempt_tick_cb, 0, 1);
 }
 
 /* 讀 timebase-frequency: 代表 rdtime 每秒增加幾個 tick */
@@ -126,5 +123,5 @@ void timer_init(const void *fdt) {
     }
 
 done:
-    //add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC); // 註冊 2 秒後執行的 callback(boot_tick_cb)
+    add_timer(preempt_tick_cb, 0, 1); // 每 1 秒觸發一次 schedule()，驅動 preemption
 }
