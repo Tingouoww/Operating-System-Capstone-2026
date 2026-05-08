@@ -1,7 +1,7 @@
 #include "mem_allocator.h"
 #include "fdt.h"
 #include "list.h"
-#include "string.h"
+#include "utils.h"
 #include "uart.h"
 
 /* page frame 變成 chunk pool 後，不管這些 chunk 有無被用到，pool 都會留著*/
@@ -17,21 +17,21 @@ static unsigned long startup_alloc_cursor;
 // static void log_block_range(unsigned long idx, unsigned int order);
 // static void log_free_area_add(unsigned long idx, unsigned int order);
 // static void log_free_area_remove(unsigned long idx, unsigned int order);
-static void log_next_page_addr(unsigned int order);
+// static void log_next_page_addr(unsigned int order);
 // static void log_page_alloc_event(unsigned long idx, unsigned int order);
-static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order);
-static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order);
-static void log_memory_region(const char *label, unsigned long start, unsigned long size);
-static void log_reserve_event(unsigned long start,
-                              unsigned long end,
-                              unsigned long first_page,
-                              unsigned long last_page);
-static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size);
-static void log_pool_grow_event(unsigned long page_idx,
-                                unsigned long page_addr,
-                                unsigned int chunk_size,
-                                unsigned int chunk_count);
-static void log_free_list_state(const char *action);
+// static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order);
+// static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order);
+// static void log_memory_region(const char *label, unsigned long start, unsigned long size);
+// static void log_reserve_event(unsigned long start,
+//                               unsigned long end,
+//                               unsigned long first_page,
+//                               unsigned long last_page);
+// static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size);
+// static void log_pool_grow_event(unsigned long page_idx,
+//                                 unsigned long page_addr,
+//                                 unsigned int chunk_size,
+//                                 unsigned int chunk_count);
+// static void log_free_list_state(const char *action);
 static void *startup_alloc(unsigned long size);
 
 extern char __kernel_start;
@@ -396,7 +396,7 @@ void memory_reserve(unsigned long start, unsigned long size)
 
     first_page = addr_to_frame_idx(&buddy_allocator, reserve_start);
     last_page = addr_to_frame_idx(&buddy_allocator, reserve_end);
-    log_reserve_event(reserve_start, reserve_end, first_page, last_page);
+    //log_reserve_event(reserve_start, reserve_end, first_page, last_page);
 
     for (idx = first_page; idx < last_page; idx++)
     {
@@ -415,21 +415,21 @@ static void reserve_memory_regions_from_fdt(const void *fdt)
     int i;
 
     /* 四類保留來源：kernel image、dtb blob、initramfs、reserved-memory */
-    log_memory_region("kernel", kernel_start, kernel_size);
+    //log_memory_region("kernel", kernel_start, kernel_size);
     memory_reserve(kernel_start, kernel_size);
 
-    log_memory_region("dtb", (unsigned long)fdt, fdt_totalsize(fdt));
+    //log_memory_region("dtb", (unsigned long)fdt, fdt_totalsize(fdt));
     memory_reserve((unsigned long)fdt, fdt_totalsize(fdt));
 
     if (fdt_get_initrd_range(fdt, &initrd_start, &initrd_end) == 0 &&
         initrd_end > initrd_start)
     {
-        log_memory_region("initrd", initrd_start, initrd_end - initrd_start);
+        //log_memory_region("initrd", initrd_start, initrd_end - initrd_start);
         memory_reserve(initrd_start, initrd_end - initrd_start);
     }
     else
     {
-        log_memory_region("initrd", 0, 0);
+        //log_memory_region("initrd", 0, 0);
     }
 
     region_count = fdt_get_reserved_memory_regions(fdt,
@@ -483,8 +483,8 @@ void mem_allocator_init(const void *fdt)
         return;
     }
 
-    log_memory_region("memory", mem_base, mem_size);
-    log_memory_region("managed", aligned_base, aligned_end - aligned_base);
+    //log_memory_region("memory", mem_base, mem_size);
+    //log_memory_region("managed", aligned_base, aligned_end - aligned_base);
 
     managed_size = aligned_end - aligned_base;
     if (managed_size > max_size)
@@ -512,9 +512,9 @@ void mem_allocator_init(const void *fdt)
     }
 
     buddy_allocator.frames = (struct frame *)frame_array;
-    log_memory_region("frame_array",
-                      (unsigned long)frame_array,
-                      frame_array_size);
+    //log_memory_region("frame_array",
+    //                  (unsigned long)frame_array,
+    //                  frame_array_size);
     buddy_build_free_areas();
     //log_free_list_state("init");
     buddy_ready = 1;
@@ -574,7 +574,7 @@ static int pool_grow(int pool_index)
         chunk_pools[pool_index].free_list = chunk;
     }
 
-    log_pool_grow_event(page_idx, page_addr, chunk_size, chunk_count);
+    //log_pool_grow_event(page_idx, page_addr, chunk_size, chunk_count);
 
     return 0;
 }
@@ -601,7 +601,7 @@ static void *pool_allocate(unsigned long size)
 
     chunk = chunk_pools[pool_index].free_list;
     chunk_pools[pool_index].free_list = chunk->next;
-    log_chunk_event("Allocate", (void *)chunk, chunk_pools[pool_index].chunk_size);
+    //log_chunk_event("Allocate", (void *)chunk, chunk_pools[pool_index].chunk_size);
 
     return (void *)chunk;
 }
@@ -662,7 +662,7 @@ static int pool_free_chunk(void *ptr)
     chunk = (struct chunk *)ptr;
     chunk->next = chunk_pools[pool_index].free_list;
     chunk_pools[pool_index].free_list = chunk;
-    log_chunk_event("Free", ptr, chunk_size);
+    //log_chunk_event("Free", ptr, chunk_size);
 
     return 0;
 }
@@ -715,7 +715,7 @@ void buddy_init(struct buddy_allocator *allocator,
         remaining -= block_pages(order);
     }
 
-    log_free_list_state("init");
+    //log_free_list_state("init");
 }
 
 /*
@@ -775,7 +775,7 @@ void * buddy_alloc(unsigned int order)
      */
     set_block_head(&buddy_allocator, idx, order, 0);
     //log_page_alloc_event(idx, order);
-    log_free_list_state("allocate");
+    //log_free_list_state("allocate");
 
     return (void *)(buddy_allocator.base_addr + idx * PAGE_SIZE);
 }
@@ -837,7 +837,7 @@ void buddy_free(void *ptr)
         if(!buddy_frame->is_free || !buddy_frame->is_head || buddy_frame->order != (int)cur_order)
             break;
 
-        log_buddy_found(idx, buddy_idx, cur_order);
+        //log_buddy_found(idx, buddy_idx, cur_order);
 
         /*
          * 只有當 buddy 也是同 order 的 free block head 時才能合併。
@@ -863,8 +863,8 @@ void buddy_free(void *ptr)
     }
 
     free_area_add(&buddy_allocator, idx, cur_order);
-    log_page_free_event(addr, idx, cur_order);
-    log_free_list_state("free");
+    //log_page_free_event(addr, idx, cur_order);
+    //log_free_list_state("free");
 }
 
 /* 對外的 byte-based 配置介面，內部轉成 buddy order 後交給 buddy_alloc。 */
@@ -952,22 +952,22 @@ void free(void *ptr)
 //     uart_puts("\n");
 // }
 
-static void log_next_page_addr(unsigned int order)
-{
-    struct frame *next_frame;
+// static void log_next_page_addr(unsigned int order)
+// {
+//     struct frame *next_frame;
 
-    if (list_empty(&buddy_allocator.free_area[order]))
-    {
-        uart_puts("none");
-        return;
-    }
+//     if (list_empty(&buddy_allocator.free_area[order]))
+//     {
+//         uart_puts("none");
+//         return;
+//     }
 
-    next_frame = list_first_entry(&buddy_allocator.free_area[order],
-                                  struct frame,
-                                  free_list);
-    uart_hex(frame_idx_to_addr(&buddy_allocator,
-                               (unsigned long)(next_frame - buddy_allocator.frames)));
-}
+//     next_frame = list_first_entry(&buddy_allocator.free_area[order],
+//                                   struct frame,
+//                                   free_list);
+//     uart_hex(frame_idx_to_addr(&buddy_allocator,
+//                                (unsigned long)(next_frame - buddy_allocator.frames)));
+// }
 
 // static void log_page_alloc_event(unsigned long idx, unsigned int order)
 // {
@@ -984,126 +984,126 @@ static void log_next_page_addr(unsigned int order)
 //     uart_puts("\n");
 // }
 
-static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
-{
-    uart_puts("[Page] Free ");
-    uart_hex(addr);
-    uart_puts(" and add back to order ");
-    uart_dec(order);
-    uart_puts(", page ");
-    uart_dec(idx);
-    uart_puts(". Next address at order ");
-    uart_dec(order);
-    uart_puts(": ");
-    log_next_page_addr(order);
-    uart_puts("\n");
-}
+// static void log_page_free_event(unsigned long addr, unsigned long idx, unsigned int order)
+// {
+//     uart_puts("[Page] Free ");
+//     uart_hex(addr);
+//     uart_puts(" and add back to order ");
+//     uart_dec(order);
+//     uart_puts(", page ");
+//     uart_dec(idx);
+//     uart_puts(". Next address at order ");
+//     uart_dec(order);
+//     uart_puts(": ");
+//     log_next_page_addr(order);
+//     uart_puts("\n");
+// }
 
-static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order)
-{
-    uart_puts("[*] Buddy found! buddy idx: ");
-    uart_dec(buddy_idx);
-    uart_puts(" for page ");
-    uart_dec(idx);
-    uart_puts(" with order ");
-    uart_dec(order);
-    uart_puts("\n");
-}
+// static void log_buddy_found(unsigned long idx, unsigned long buddy_idx, unsigned int order)
+// {
+//     uart_puts("[*] Buddy found! buddy idx: ");
+//     uart_dec(buddy_idx);
+//     uart_puts(" for page ");
+//     uart_dec(idx);
+//     uart_puts(" with order ");
+//     uart_dec(order);
+//     uart_puts("\n");
+// }
 
-static void log_memory_region(const char *label,
-                              unsigned long start,
-                              unsigned long size)
-{
-    unsigned long end;
+// static void log_memory_region(const char *label,
+//                               unsigned long start,
+//                               unsigned long size)
+// {
+//     unsigned long end;
 
-    uart_puts("[Mem] ");
-    uart_puts(label);
-    uart_puts(": ");
+//     uart_puts("[Mem] ");
+//     uart_puts(label);
+//     uart_puts(": ");
 
-    if (size == 0)
-    {
-        uart_puts("none\n");
-        return;
-    }
+//     if (size == 0)
+//     {
+//         uart_puts("none\n");
+//         return;
+//     }
 
-    end = start + size;
-    if (end < start)
-    {
-        end = ~0UL;
-    }
+//     end = start + size;
+//     if (end < start)
+//     {
+//         end = ~0UL;
+//     }
 
-    uart_puts("[");
-    uart_hex(start);
-    uart_puts(", ");
-    uart_hex(end);
-    uart_puts("), size=");
-    uart_hex(size);
-    uart_puts("\n");
-}
+//     uart_puts("[");
+//     uart_hex(start);
+//     uart_puts(", ");
+//     uart_hex(end);
+//     uart_puts("), size=");
+//     uart_hex(size);
+//     uart_puts("\n");
+// }
 
-static void log_reserve_event(unsigned long start,
-                              unsigned long end,
-                              unsigned long first_page,
-                              unsigned long last_page)
-{
-    uart_puts("[Reserve] Reserve address [");
-    uart_hex(start);
-    uart_puts(", ");
-    uart_hex(end);
-    uart_puts("). Range of pages: [");
-    uart_dec(first_page);
-    uart_puts(", ");
-    uart_dec(last_page);
-    uart_puts(")\n");
-}
+// static void log_reserve_event(unsigned long start,
+//                               unsigned long end,
+//                               unsigned long first_page,
+//                               unsigned long last_page)
+// {
+//     uart_puts("[Reserve] Reserve address [");
+//     uart_hex(start);
+//     uart_puts(", ");
+//     uart_hex(end);
+//     uart_puts("). Range of pages: [");
+//     uart_dec(first_page);
+//     uart_puts(", ");
+//     uart_dec(last_page);
+//     uart_puts(")\n");
+// }
 
-static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
-{
-    uart_puts("[Chunk] ");
-    uart_puts(action);
-    uart_puts(" ");
-    uart_hex((unsigned long)ptr);
-    uart_puts(" at chunk size ");
-    uart_dec(chunk_size);
-    uart_puts("\n");
-}
+// static void log_chunk_event(const char *action, void *ptr, unsigned int chunk_size)
+// {
+//     uart_puts("[Chunk] ");
+//     uart_puts(action);
+//     uart_puts(" ");
+//     uart_hex((unsigned long)ptr);
+//     uart_puts(" at chunk size ");
+//     uart_dec(chunk_size);
+//     uart_puts("\n");
+// }
 
-static void log_pool_grow_event(unsigned long page_idx,
-                                unsigned long page_addr,
-                                unsigned int chunk_size,
-                                unsigned int chunk_count)
-{
-    uart_puts("[Pool] Grow page ");
-    uart_dec(page_idx);
-    uart_puts(" @ ");
-    uart_hex(page_addr);
-    uart_puts(" chunk_size ");
-    uart_dec(chunk_size);
-    uart_puts(" count ");
-    uart_dec(chunk_count);
-    uart_puts("\n");
-}
+// static void log_pool_grow_event(unsigned long page_idx,
+//                                 unsigned long page_addr,
+//                                 unsigned int chunk_size,
+//                                 unsigned int chunk_count)
+// {
+//     uart_puts("[Pool] Grow page ");
+//     uart_dec(page_idx);
+//     uart_puts(" @ ");
+//     uart_hex(page_addr);
+//     uart_puts(" chunk_size ");
+//     uart_dec(chunk_size);
+//     uart_puts(" count ");
+//     uart_dec(chunk_count);
+//     uart_puts("\n");
+// }
 
-static void log_free_list_state(const char *action)
-{
-    unsigned int order;
+// static void log_free_list_state(const char *action)
+// {
+//     unsigned int order;
 
-    uart_puts("[Buddy] Free list blocks after ");
-    uart_puts(action);
-    uart_puts(": ");
+//     uart_puts("[Buddy] Free list blocks after ");
+//     uart_puts(action);
+//     uart_puts(": ");
 
-    for (order = 0; order <= MAX_ORDER; order++)
-    {
-        if (order > 0)
-        {
-            uart_puts(", ");
-        }
+//     for (order = 0; order <= MAX_ORDER; order++)
+//     {
+//         if (order > 0)
+//         {
+//             uart_puts(", ");
+//         }
 
-        uart_puts("order ");
-        uart_dec(order);
-        uart_puts(" = ");
-        uart_dec(buddy_allocator.free_area_blocks[order]);
-    }
+//         uart_puts("order ");
+//         uart_dec(order);
+//         uart_puts(" = ");
+//         uart_dec(buddy_allocator.free_area_blocks[order]);
+//     }
 
-    uart_puts("\n");
-}
+//     uart_puts("\n");
+// }

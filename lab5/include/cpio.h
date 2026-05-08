@@ -25,5 +25,6 @@ struct cpio_newc_header
 void initrd_init(void *start, void *end);
 void initrd_list(const void *rd);
 void initrd_cat(const void *rd, const char *filename);
+unsigned long cpio_find_exec(const char *filename);
 
 #endif

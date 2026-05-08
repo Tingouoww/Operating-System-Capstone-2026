@@ -1,14 +1,10 @@
 #include "task.h"
 #include "uart.h"
 #include "mem_allocator.h"
-#include "string.h"
+#include "utils.h"
+#include "cpio.h"
 
 #define MAX_TASKS 64
-
-// THREAD STATE
-#define READY_THREAD 0
-#define RUNNING_THREAD 1
-#define ZOMBIE_THREAD 2
 
 struct task_entry{
     task_callback_t callback;
@@ -17,7 +13,7 @@ struct task_entry{
     int active;
 };
 
-int nr_threads = 0; // Thread Counter
+int nr_threads = 0;
 struct task_struct* run_queue = 0;
 
 static struct task_entry task_queue[MAX_TASKS];
@@ -34,11 +30,12 @@ void schedule() {
     struct task_struct* current = get_current();
     struct task_struct* next = current->next;
 
-    while(next->state == ZOMBIE_THREAD) next = next->next;
+    while(next->state == ZOMBIE_THREAD || next->state == WAITING_THREAD)
+        next = next->next;
 
     if (next == current) return;
     
-    if (current->state != ZOMBIE_THREAD) current->state = READY_THREAD;
+    if (current->state == RUNNING_THREAD) current->state = READY_THREAD;
     next->state = RUNNING_THREAD;
     switch_to(current, next);
 }
@@ -50,6 +47,8 @@ void idle_init(void){
     idle_task->pid = nr_threads++;
     idle_task->state = RUNNING_THREAD;
     idle_task->next = idle_task;
+    idle_task->parent_pid = -1; 
+    idle_task->wait_for_pid = -1;
     run_queue = idle_task;
     
     asm volatile("mv tp, %0" :: "r"(idle_task) : "memory"); 
@@ -62,6 +61,15 @@ void idle() {
     }
 }
 
+struct task_struct *find_task_by_pid(int pid) {
+    struct task_struct *t = run_queue;
+    do {
+        if (t->pid == pid) return t;
+        t = t->next;
+    } while (t != run_queue);
+    return NULL;
+}
+
 /* 從 run_queue 開始走一圈, 遇到 ZOMBIE_THREAD 就釋放資源 */
 void kill_zombies(){
     struct task_struct *prev = run_queue;
@@ -69,12 +77,24 @@ void kill_zombies(){
     
     while(cur != run_queue){
         struct task_struct *next = cur->next;
-        if(cur->state == ZOMBIE_THREAD){
-            prev->next = next;
-            buddy_free((void*)cur->stack);
-            free(cur);
-        }
-        else{
+        if (cur->state == ZOMBIE_THREAD) {
+            int parent_waiting = 0;
+            if (cur->parent_pid >= 0) {
+                struct task_struct *parent = find_task_by_pid(cur->parent_pid);
+                if (parent && parent->state == WAITING_THREAD &&
+                    parent->wait_for_pid == cur->pid)
+                    parent_waiting = 1;
+            }
+            if (!parent_waiting) {
+                prev->next = next;
+                if (cur->user_stack) buddy_free((void *)cur->user_stack);
+                buddy_free((void *)cur->stack);
+                free(cur);
+                // prev 不移動
+            } else {
+                prev = cur;  // 留著讓 sys_waitpid 清理
+            }
+        } else {
             prev = cur;
         }
         cur = next;
@@ -104,6 +124,8 @@ struct task_struct* thread_create(void (*threadfn)())
     t->pid = nr_threads++;
     t->state = READY_THREAD;
     t->stack = stack_base;
+    t->parent_pid = -1;
+    t->wait_for_pid = -1;
     t->thread.sp = stack_top;
     t->thread.ra = (unsigned long)threadfn;
     t->next = run_queue->next;
@@ -186,4 +208,62 @@ void run_tasks(void){
         asm volatile("csrrci zero, sstatus, 0x2"); // 寫進 x0 -> 不需要保留原本讀出的值
         current_task_priority = prev_priority;
     }
+}
+
+/* ------------------------- user exec --------------------------*/
+
+int user_exec(const char *filename) {
+    // CPIO 掃描找 user_entry
+    unsigned long user_entry = cpio_find_exec(filename);
+    if(!user_entry) return -1;
+
+    // 分配 kernel stack 和 user stack
+    unsigned long kstack = (unsigned long)buddy_alloc(0);
+    unsigned long ustack = (unsigned long)buddy_alloc(0);
+    if(!kstack || !ustack) {
+        if (kstack) buddy_free((void *)kstack);
+        if (ustack) buddy_free((void *)ustack);
+        return -1;
+    }
+
+    unsigned long kernel_sp = kstack + PAGE_SIZE;
+    unsigned long user_sp   = ustack + PAGE_SIZE;
+
+    // 在 kernel stack 頂端建立 fake trap frame
+    struct pt_regs *regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE);
+    memset(regs, 0, TRAP_FRAME_SIZE);
+    regs->sepc    = user_entry;
+    regs->sp      = user_sp;
+    // sstatus: SPP=0 (U-mode), SPIE=1 (enable interrupt)
+    regs->sstatus = (1UL << 5);  // SPIE=1, SPP=0
+
+    // 分配並初始化 task_struct
+    struct task_struct *t = allocate(sizeof(*t));
+    if (!t) {
+        buddy_free((void *)kstack);
+        buddy_free((void *)ustack);
+        return -1;
+    }
+    memset(t, 0, sizeof(*t));
+    t->pid         = nr_threads++;
+    t->state       = READY_THREAD;
+    t->stack       = kstack;
+    t->kernel_sp   = kernel_sp;
+    t->user_stack  = ustack;
+    t->user_sp     = user_sp;
+    t->user_entry  = user_entry;
+    t->parent_pid  = get_current()->pid;
+    t->wait_for_pid = -1;
+
+    regs->tp      = (unsigned long)t;
+
+    // 設定 thread 讓 switch_to 後跳到 ret_from_exception
+    extern void ret_from_exception(void);
+    t->thread.ra = (unsigned long)ret_from_exception;
+    t->thread.sp = (unsigned long)regs;
+
+    // 加入 run_queue
+    t->next = run_queue->next;
+    run_queue->next = t;
+    return t->pid;
 }

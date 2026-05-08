@@ -1,5 +1,5 @@
 #include "fdt.h"
-#include "string.h"
+#include "utils.h"
 #include "uart.h"
 #include <stddef.h>
 /* Internal */

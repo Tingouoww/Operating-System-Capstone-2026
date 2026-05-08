@@ -6,10 +6,25 @@
 #include "fdt.h"
 #include "mem_allocator.h"
 #include "mem_allocator_test.h"
-#include "string.h"
+#include "utils.h"
 #include "timer.h"
+#include "syscall.h"
+#include "task.h"
 
 #include <stdint.h>
+
+static void foo_thread(void) {
+    for (int i = 0; i < 5; i++) {
+        uart_puts("Thread id: ");
+        uart_dec(get_current()->pid);
+        uart_putc(' ');
+        uart_dec(i);
+        uart_putc('\n');
+        for (int j = 0; j < 10000000; j++);
+        schedule();
+    }
+    thread_exit();
+}
 
 #define MSG_POOL_COUNT 16
 #define MSG_POOL_LEN   64
@@ -31,7 +46,6 @@ static int simple_atoi(const char *s) {
     return n;
 }
 
-extern int exec(const char *filename);
 
 static const void *fdt_base;
 static const void *initrd_base;
@@ -113,6 +127,7 @@ void print_help()
     uart_puts("  test_alloc - run memory allocator test.\n");
     //uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
     uart_puts("  exec <file> - execute user program from initramfs in U-mode.\n");
+    uart_puts("  thread_test - create 3 kernel threads (Basic Exercise 1 demo).\n");
     uart_puts("  settimeout <sec> <msg> - show text after x sec.\n");
 }
 
@@ -183,22 +198,46 @@ void run_command(const char *cmd)
     {
         run_buddy_merge_test();
     }
-    else if (cmd[0] == 'e' && cmd[1] == 'x' && cmd[2] == 'e' && cmd[3] == 'c' &&
-             (cmd[4] == '\0' || cmd[4] == ' '))
-    {
-        const char *filename = skip_spaces(cmd + 4);
+    // else if (cmd[0] == 'e' && cmd[1] == 'x' && cmd[2] == 'e' && cmd[3] == 'c' &&
+    //          (cmd[4] == '\0' || cmd[4] == ' '))
+    // {
+    //     const char *filename = skip_spaces(cmd + 4);
 
-        if (*filename == '\0')
-        {
+    //     if (*filename == '\0')
+    //     {
+    //         uart_puts("Usage: exec <filename>\n");
+    //         return;
+    //     }
+
+    //     if (exec(filename) < 0)
+    //     {
+    //         uart_puts("exec: file not found\n");
+    //     }
+    //     // exec() never returns on success (sret jumps to U-mode)
+    // }
+    else if (cmd[0]=='e' && cmd[1]=='x' && cmd[2]=='e' && cmd[3]=='c' &&
+             (cmd[4]=='\0' || cmd[4]==' ')) {
+        const char *filename = skip_spaces(cmd + 4);
+        int pid;
+
+        if (*filename == '\0') {
             uart_puts("Usage: exec <filename>\n");
             return;
         }
-
-        if (exec(filename) < 0)
-        {
+        pid = user_exec(filename);
+        if (pid < 0) {
             uart_puts("exec: file not found\n");
+            return;
         }
-        // exec() never returns on success (sret jumps to U-mode)
+
+        // Suspend the kernel shell until the spawned user process exits, so
+        // the user program owns the UART while it is running.
+        sys_waitpid(pid);
+    }
+    else if (check_command(cmd, "thread_test")) {
+        for (int i = 0; i < 3; i++)
+            thread_create(foo_thread);
+        uart_puts("3 threads created\n");
     }
     else if (cmd[0] == 's' && cmd[1] == 'e' && cmd[2] == 't' &&
              cmd[3] == 't' && cmd[4] == 'i' && cmd[5] == 'm' &&

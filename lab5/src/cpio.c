@@ -1,4 +1,4 @@
-#include "string.h"
+#include "utils.h"
 #include "cpio.h"
 #include "uart.h"
 
@@ -124,6 +124,33 @@ void initrd_list(const void *rd)
         cpio = (struct cpio_newc_header *)(base + align((int)((name - base) + namesize), 4) +
                                            align(filesize, 4));
     }
+}
+
+unsigned long cpio_find_exec(const char *filename)
+{
+    if (!initrd_start || !filename)
+        return 0;
+
+    struct cpio_newc_header *cpio = (struct cpio_newc_header *)initrd_start;
+
+    while ((const void *)cpio < initrd_end && str_ncmp(cpio->c_magic, "070701", 6) == 0) {
+        int filesize = hextoi(cpio->c_filesize, sizeof(cpio->c_filesize));
+        int namesize = hextoi(cpio->c_namesize, sizeof(cpio->c_namesize));
+        const char *name = (const char *)(cpio + 1);
+        const char *base = (const char *)cpio;
+
+        if (str_cmp(name, "TRAILER!!!") == 0)
+            break;
+
+        int data_offset = align((int)((name - base) + namesize), 4);
+
+        if (str_cmp(name, filename) == 0 && filesize > 0)
+            return (unsigned long)(base + data_offset);
+
+        cpio = (struct cpio_newc_header *)(base + data_offset + align(filesize, 4));
+    }
+
+    return 0;
 }
 
 void initrd_cat(const void *rd, const char *filename)

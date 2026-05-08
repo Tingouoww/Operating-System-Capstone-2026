@@ -10,25 +10,23 @@ clear_bss:
     blt a3, a4, clear_bss
 clear_bss_done:
     la a2, handle_exception
-    csrw stvec, a2  # stvec: 存 S-mode trap handler 的入口位址
+    csrw stvec, a2
     la sp, _end
     tail start_kernel
 
 .global handle_exception
-.align 2 # 對齊 2 的 2 次方 byte(4 byte)
+.align 2
 handle_exception:
     /*
      * Retrieve kernel sp from sscratch and
      * save user sp to sscratch
      */
-    # csrrw: Control and Status Register Read/Write
-    csrrw sp, sscratch, sp  # 交換 sp 和 sscratch, sscratch : 避免覆寫使用者暫存器, 完成後 => sp = kernel_sp, sscratch = user_ap
-    bnez sp, save_context # 如果 trap 是從 S-mode 來，sscratch 是 0，交換後 sp 會變 0, 用 bnez sp 判斷失敗
+    csrrw sp, sscratch, sp
+    bnez sp, save_context
 
-    csrr sp, sscratch 
+    csrr sp, sscratch
 save_context:
     /* Save context */
-    /* 把 trap 發生當下的 CPU 狀態存到 kernel stack 上，形成一個 trap frame，讓 C 函式 do_trap() 可以安全處理 trap，處理完再恢復回去。*/
     addi sp, sp, -8 * 35
     sd ra,  8 *  0(sp)
     sd gp,  8 *  2(sp)
@@ -61,10 +59,10 @@ save_context:
     sd t5,  8 * 29(sp)
     sd t6,  8 * 30(sp)
     csrr s0, sscratch
-    csrr s1, sepc # trap 發生時的 PC，(CPU 正在處理哪一個位址的指令)
-    csrr s2, sstatus  #  trap 發生時相關狀態，包含 SPP/SPIE 等
-    csrr s3, scause # trap 原因，例如 U-mode ecall 是 8 (746-747)
-    csrr s4, stval # trap 額外資訊，例如 fault address，ecall 通常是 0
+    csrr s1, sepc
+    csrr s2, sstatus
+    csrr s3, scause
+    csrr s4, stval
     sd s0,  8 *  1(sp)
     sd s1,  8 * 31(sp)
     sd s2,  8 * 32(sp)
@@ -72,9 +70,10 @@ save_context:
     sd s4,  8 * 34(sp)
 
     csrw sscratch, zero
-    move a0, sp # 第一個參數放在 a0
-    call do_trap #do_trap(sp) , sp 指向剛建立的 trap frame
+    move a0, sp
+    call do_trap
 
+.global ret_from_exception
 ret_from_exception:
     ld s0,  8 * 32(sp)
     andi s0, s0, (1 << 8)
@@ -121,10 +120,20 @@ ret_from_exception:
     ld sp,  8 *  1(sp)
     sret
 
+// 新建立的 user process 第一次被排程時，switch_to 的 ra 指向這裡。
+// 此時 sp 已指向 kernel stack 上預先建好的假 pt_regs frame，
+// 直接落入 ret_from_exception，讓它設好 sscratch 後 sret 回 U-mode。
+.global ret_to_user_trampoline
+ret_to_user_trampoline:
+    j ret_from_exception
+
+// switch_to 的 C function 參數是 prev / next
 .global switch_to
 switch_to:
-    sd ra, 0(a0)
-    sd sp, 8(a0)
+    /* Save Context */
+    // 把目前 task 的必要 reg 存到 prev
+    sd ra, 0(a0) // 存返回位址 ( &prev->thread.ra )
+    sd sp, 8(a0) // 存目前 stack pointer
     sd s0, 16(a0)
     sd s1, 24(a0)
     sd s2, 32(a0)
@@ -138,6 +147,8 @@ switch_to:
     sd s10, 96(a0)
     sd s11, 104(a0)
 
+    /* Restore Context */
+    // 從 next 載入下一個 task 的上下文
     ld ra, 0(a1)
     ld sp, 8(a1)
     ld s0, 16(a1)
@@ -152,5 +163,5 @@ switch_to:
     ld s9, 88(a1)
     ld s10, 96(a1)
     ld s11, 104(a1)
-    mv tp, a1 // mv des, source
-    ret // jump to ra
+    mv tp, a1
+    ret // 跳到 ra 指向的位置
