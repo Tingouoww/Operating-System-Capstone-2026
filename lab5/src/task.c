@@ -1,7 +1,14 @@
 #include "task.h"
 #include "uart.h"
+#include "mem_allocator.h"
+#include "string.h"
 
 #define MAX_TASKS 64
+
+// THREAD STATE
+#define READY_THREAD 0
+#define RUNNING_THREAD 1
+#define ZOMBIE_THREAD 2
 
 struct task_entry{
     task_callback_t callback;
@@ -10,8 +17,107 @@ struct task_entry{
     int active;
 };
 
+int nr_threads = 0; // Thread Counter
+struct task_struct* run_queue = 0;
+
 static struct task_entry task_queue[MAX_TASKS];
 static volatile int current_task_priority = -1; // -1 : 沒有 task 在跑
+
+struct task_struct* get_current() {
+    register struct task_struct* current asm("tp");
+    return current;
+}
+
+extern void switch_to(struct task_struct* prev, struct task_struct* next);
+
+void schedule() {
+    struct task_struct* current = get_current();
+    struct task_struct* next = current->next;
+
+    while(next->state == ZOMBIE_THREAD) next = next->next;
+
+    if (next == current) return;
+    
+    if (current->state != ZOMBIE_THREAD) current->state = READY_THREAD;
+    next->state = RUNNING_THREAD;
+    switch_to(current, next);
+}
+
+void idle_init(void){
+    struct task_struct *idle_task = 
+        (struct task_struct *) allocate(sizeof(struct task_struct));
+    memset(idle_task, 0, sizeof(*idle_task));
+    idle_task->pid = nr_threads++;
+    idle_task->state = RUNNING_THREAD;
+    idle_task->next = idle_task;
+    run_queue = idle_task;
+    
+    asm volatile("mv tp, %0" :: "r"(idle_task) : "memory"); 
+}
+
+void idle() {
+    while (1) {
+        kill_zombies();
+        schedule();
+    }
+}
+
+/* 從 run_queue 開始走一圈, 遇到 ZOMBIE_THREAD 就釋放資源 */
+void kill_zombies(){
+    struct task_struct *prev = run_queue;
+    struct task_struct *cur = run_queue->next;
+    
+    while(cur != run_queue){
+        struct task_struct *next = cur->next;
+        if(cur->state == ZOMBIE_THREAD){
+            prev->next = next;
+            buddy_free((void*)cur->stack);
+            free(cur);
+        }
+        else{
+            prev = cur;
+        }
+        cur = next;
+    }
+    
+}
+
+struct task_struct* thread_create(void (*threadfn)())
+{ 
+    struct task_struct* t = (struct task_struct*) allocate(sizeof(struct task_struct));
+    if (!t) return NULL;
+
+    unsigned long stack_base;
+    unsigned long stack_top;
+
+    stack_base = (unsigned long) buddy_alloc(0); // 配置一頁 kernel stack
+    if(!stack_base){
+        free(t);
+        return NULL;
+    }
+
+    memset(t, 0, sizeof(*t));
+
+    stack_top = stack_base + PAGE_SIZE;
+    stack_top &= ~0xFUL; // 16-byte 對齊
+
+    t->pid = nr_threads++;
+    t->state = READY_THREAD;
+    t->stack = stack_base;
+    t->thread.sp = stack_top;
+    t->thread.ra = (unsigned long)threadfn;
+    t->next = run_queue->next;
+    run_queue->next = t;
+
+    return t;
+};
+
+void thread_exit(){
+    get_current()->state = ZOMBIE_THREAD; // 把目前的 thread 標成 zombie 等待清理
+    schedule(); 
+}
+
+/* --------- task ---------- */
 
 static int find_best_task(void){
     int best = -1;

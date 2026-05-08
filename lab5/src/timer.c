@@ -126,5 +126,5 @@ void timer_init(const void *fdt) {
     }
 
 done:
-    add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC); // 註冊 2 秒後執行的 callback(boot_tick_cb)
+    //add_timer(boot_tick_cb, 0, TIMER_INTERVAL_SEC); // 註冊 2 秒後執行的 callback(boot_tick_cb)
 }

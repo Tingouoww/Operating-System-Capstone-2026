@@ -40,6 +40,20 @@ static int local_memcmp(const void *a, const void *b, int n) {
     return 0;
 }
 
+/* 測試 thread */
+static void foo(){
+    for(int i = 0; i < 5; i++){
+        uart_puts("Thread id: ");
+        uart_dec(get_current()->pid);
+        uart_puts(" ");
+        uart_dec(i);
+        uart_puts("\n");
+        for(int j = 0; j < 1000000; j++);
+        schedule();
+    }
+    thread_exit();
+}
+
 int exec(const char *filename) {
     char *p = (char *)initrd_base;
     while (local_memcmp(p + sizeof(struct cpio_newc_header), "TRAILER!!!", 10)) {
@@ -109,50 +123,6 @@ void do_trap(struct pt_regs *regs) {
     }
 }
 
-int priority_set[4];
-
-void p1_callback(){
-    uart_puts("P1 start\n");
-    uart_puts("P1 end\n");
-}
-
-void p3_callback(){
-    uart_puts("P3 start\n");
-    add_task(p1_callback, NULL, priority_set[0]);
-    add_timer(NULL, NULL, 0);
-    uart_puts("P3 end\n");
-}
-
-void p2_callback(){
-    uart_puts("P2 start\n");
-    add_task(p3_callback, NULL, priority_set[2]);
-    add_timer(NULL, NULL, 0);
-    uart_puts("P2 end\n");
-}
-
-void p4_callback(){
-    uart_puts("P4 start\n");
-    add_task(p2_callback, NULL, priority_set[1]);
-    add_timer(NULL, NULL, 0);
-    uart_puts("P4 end\n");
-}
-
-void test_func(){
-    int from_small_to_big = 0; // set to 0 if the task with a smaller number has a higher priority
-    if(from_small_to_big){
-        priority_set[0] = 10;
-        priority_set[1] = 20;
-        priority_set[2] = 30;
-        priority_set[3] = 40;
-    }else{
-        priority_set[0] = 40;
-        priority_set[1] = 30;
-        priority_set[2] = 20;
-        priority_set[3] = 10;
-    }
-
-    add_task(p4_callback, NULL, priority_set[3]);
-}
 
 void start_kernel(unsigned long hartid, void *dtb) {
     char buf[128];
@@ -171,7 +141,10 @@ void start_kernel(unsigned long hartid, void *dtb) {
     asm volatile("csrsi sstatus, 0x2");              // SIE
 
     timer_init(dtb);
-    add_timer(test_func, NULL, 0);
+    idle_init();
+    for (int i = 0; i < 3; i++)
+        thread_create(foo);
+    idle();   // 不 return，取代 while(1) shell loop
     print_shell_prompt();
     uart_puts("boot time: 0\n");
     while (1) {
