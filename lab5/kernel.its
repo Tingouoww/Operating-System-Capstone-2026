@@ -1,0 +1,56 @@
+/dts-v1/;
+
+/ {
+    description = "Lab 4 FIT image";
+    #address-cells = <1>;
+
+    images {
+        kernel {
+            description = "Lab 4 kernel";
+            data = /incbin/("kernel.bin");
+            type = "kernel";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            load = <0x00200000>;
+            entry = <0x00200000>;
+            hash {
+                algo = "crc32";
+            };
+        };
+
+        fdt {
+            description = "OrangePi RV2 device tree";
+            data = /incbin/("x1_orangepi-rv2.dtb");
+            type = "flat_dt";
+            arch = "riscv";
+            compression = "none";
+            hash {
+                algo = "crc32";
+            };
+        };
+
+        ramdisk {
+            description = "Lab 4 initramfs";
+            data = /incbin/("initramfs.cpio");
+            type = "ramdisk";
+            arch = "riscv";
+            os = "linux";
+            compression = "none";
+            hash {
+                algo = "crc32";
+            };
+        };
+    };
+
+    configurations {
+        default = "conf";
+
+        conf {
+            description = "Kernel + DTB + initramfs";
+            kernel = "kernel";
+            fdt = "fdt";
+            ramdisk = "ramdisk";
+        };
+    };
+};
