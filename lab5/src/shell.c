@@ -126,7 +126,7 @@ void print_help()
     //uart_puts("  load   - receive kernel_payload.bin over UART and jump to it.\n");
     uart_puts("  test_alloc - run memory allocator test.\n");
     //uart_puts("  test_buddy_merge - run a dedicated buddy merge test.\n");
-    uart_puts("  exec <file> - execute user program from initramfs in U-mode.\n");
+    uart_puts("  exec <file> - execute user program from initramfs in U-mode (e.g. osctest.bin).\n");
     uart_puts("  thread_test - create 3 kernel threads (Basic Exercise 1 demo).\n");
     uart_puts("  settimeout <sec> <msg> - show text after x sec.\n");
 }
@@ -229,9 +229,6 @@ void run_command(const char *cmd)
             uart_puts("exec: file not found\n");
             return;
         }
-
-        // Suspend the kernel shell until the spawned user process exits, so
-        // the user program owns the UART while it is running.
         sys_waitpid(pid);
     }
     else if (check_command(cmd, "thread_test")) {
@@ -260,7 +257,8 @@ void run_command(const char *cmd)
             slot[i++] = *p++;
         slot[i] = '\0';
 
-        add_timer(settimeout_cb, slot, (unsigned long)sec);
+        if (add_timer(settimeout_cb, slot, (unsigned long)sec) < 0)
+            uart_puts("settimeout: timer queue full\n");
     }
     else
     {

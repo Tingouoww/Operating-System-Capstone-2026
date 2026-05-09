@@ -10,26 +10,7 @@
 #include "task.h"
 #include "pt_regs.h"
 #include "syscall.h"
-
-#define INITRD_BASE 0xa0200000
-#define STACK_SIZE  0x1000
-
-static unsigned long initrd_base = INITRD_BASE;
-
-
-/* 測試 thread */
-static void foo(){
-    for(int i = 0; i < 5; i++){
-        uart_puts("Thread id: ");
-        uart_dec(get_current()->pid);
-        uart_puts(" ");
-        uart_dec(i);
-        uart_puts("\n");
-        for(int j = 0; j < 1000000; j++);
-        schedule();
-    }
-    thread_exit();
-}
+#include "video.h"
 
 static void shell_thread(void) {
     char buf[128];
@@ -67,6 +48,8 @@ void do_trap(struct pt_regs *regs) {
         else if (irq == SCAUSE_SUPERVISOR_EXT)
             uart_handle_external_irq();
         run_tasks();
+        if (timer_consume_preempt_pending())
+            schedule();
         regs->tp = (unsigned long)get_current();
     }
     else if(regs->scause == SCAUSE_ECALL_U){
@@ -84,6 +67,10 @@ void do_trap(struct pt_regs *regs) {
             case 5: regs->a0 = sys_waitpid((long)regs->a0); break;
             case 6: sys_exit((int)regs->a0); break;  // 不返回
             case 7: regs->a0 = sys_stop((long)regs->a0); break;
+            case 8: sys_display((const unsigned int *)regs->a0,
+                                (unsigned int)regs->a1,
+                                (unsigned int)regs->a2); break;
+            case 9: regs->a0 = sys_usleep((unsigned int)regs->a0); break;
             default: regs->a0 = -1; break;
         }
 
@@ -105,16 +92,12 @@ void do_trap(struct pt_regs *regs) {
 
 
 void start_kernel(unsigned long hartid, void *dtb) {
-    char buf[128];
-    int  len = 0;
-    char c;
-
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
     mem_allocator_init(dtb);
+    video_init(dtb);
     shell_init(dtb);
     bootloader_init(hartid, dtb);
-    initrd_base = fdt_get_initrd_start_or_default(dtb, INITRD_BASE);
 
     asm volatile("csrs sie, %0" :: "r"(1UL << 5));  // STIE
     asm volatile("csrs sie, %0" :: "r"(1UL << 9));  // SEIE
@@ -122,9 +105,6 @@ void start_kernel(unsigned long hartid, void *dtb) {
 
     timer_init(dtb);
     idle_init();
-    // for (int i = 0; i < 3; i++) {
-    //     thread_create(foo);
-    // }
     thread_create(shell_thread);
     idle();
 }

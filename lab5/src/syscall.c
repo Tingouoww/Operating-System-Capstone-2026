@@ -4,6 +4,16 @@
 #include "cpio.h"
 #include "utils.h"
 #include "uart.h"
+#include "timer.h"
+#include "video.h"
+
+static void wake_sleeping_task(void *arg) {
+    int pid = (int)(unsigned long)arg;
+    struct task_struct *task = find_task_by_pid(pid);
+
+    if (task && task->state == SLEEPING_THREAD)
+        task->state = READY_THREAD;
+}
 
 long sys_getpid(void){
     return get_current()->pid;
@@ -18,8 +28,17 @@ long sys_uart_read(char *buf, long count){
 
 /* Write count bytes from buf. Return the number of bytes written. */
 long sys_uart_write(const char *buf, long count){
+    unsigned long sstatus_save;
+
+    if (!buf || count <= 0)
+        return 0;
+
+    // Keep each write() contiguous on the console so preemption
+    // does not interleave bytes from different processes.
+    asm volatile("csrrci %0, sstatus, 0x2" : "=r"(sstatus_save));
     for (long i = 0; i < count; i++)
         uart_putc(buf[i]);
+    asm volatile("csrw sstatus, %0" :: "r"(sstatus_save));
     return count;
 } // 2
 
@@ -65,7 +84,7 @@ long sys_fork(struct pt_regs *regs){
         return -1;
     }
 
-    // COPY USER STACK
+    // COPY USER STACK ( 保存user 程式的執行現場 )
     mem_cpy((void*)cuser, (void*)cur->user_stack, PAGE_SIZE);
 
     // 在 child kernel stack 上 copy trap frame
@@ -189,3 +208,32 @@ int sys_stop(long pid){
     }
     return 0;
 } // 7
+
+void sys_display(const unsigned int *bmp_image,
+                 unsigned int width,
+                 unsigned int height) {
+    if (!bmp_image || width == 0 || height == 0)
+        return;
+
+    video_display(bmp_image, width, height);
+} // 8
+
+int sys_usleep(unsigned int usec){
+    struct task_struct *cur = get_current();
+    unsigned long sstatus_save;
+
+    if (usec == 0)
+        return 0;
+
+    asm volatile("csrrci %0, sstatus, 0x2" : "=r"(sstatus_save));
+    cur->state = SLEEPING_THREAD;
+    if (add_timer_us(wake_sleeping_task, (void *)(unsigned long)cur->pid, usec) < 0) {
+        cur->state = RUNNING_THREAD;
+        asm volatile("csrw sstatus, %0" :: "r"(sstatus_save));
+        return -1;
+    }
+    asm volatile("csrw sstatus, %0" :: "r"(sstatus_save));
+
+    schedule();
+    return 0;
+} // 9

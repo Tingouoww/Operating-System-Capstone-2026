@@ -30,7 +30,9 @@ void schedule() {
     struct task_struct* current = get_current();
     struct task_struct* next = current->next;
 
-    while(next->state == ZOMBIE_THREAD || next->state == WAITING_THREAD)
+    while(next->state == ZOMBIE_THREAD ||
+          next->state == WAITING_THREAD ||
+          next->state == SLEEPING_THREAD)
         next = next->next;
 
     if (next == current) return;

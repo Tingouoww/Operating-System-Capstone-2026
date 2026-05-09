@@ -4,8 +4,8 @@
 #include "fdt.h"
 #include "task.h"
 
-#define TIMER_INTERVAL_SEC 2
-#define MAX_TIMERS         64
+#define MAX_TIMERS              64
+#define PREEMPT_TICKS_DIVISOR   32
 
 struct timer_entry {
     unsigned long deadline_ticks;
@@ -17,8 +17,9 @@ struct timer_entry {
 static struct timer_entry timer_queue[MAX_TIMERS];
 static unsigned long timer_freq         = 10000000;
 static unsigned long timer_next_deadline = 0;
-
-unsigned long boot_seconds = 0;
+static unsigned long preempt_interval_ticks = 1;
+static unsigned long next_preempt_deadline = 0;
+static volatile int preempt_pending = 0;
 
 static void reprogram_timer(void) {
     // Hardware timer tracks only one deadline, so pick the earliest active
@@ -29,6 +30,10 @@ static void reprogram_timer(void) {
         if (!timer_queue[i].active) continue;
         if (earliest == 0 || timer_queue[i].deadline_ticks < earliest)
             earliest = timer_queue[i].deadline_ticks;
+    }
+    if (next_preempt_deadline != 0 &&
+        (earliest == 0 || next_preempt_deadline < earliest)) {
+        earliest = next_preempt_deadline;
     }
     if (earliest == 0) return;
     timer_next_deadline = earliest;
@@ -46,12 +51,16 @@ static void fire_expired_timers(unsigned long now) {
     }
 }
 
-void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
-    /* 把一個 callback 放進 timer_queue，設定它在 sec 秒後到期， 
-    如果這個 timer 是目前最早到期的 timer， 就呼叫 sbi_set_timer(deadline) 重新設定硬體 timer。 */
+int add_timer_ticks(void (*callback)(void *), void *arg, unsigned long ticks) {
+    /* 把 callback 放進 timer_queue，設定它在 ticks 後到期。 */
     unsigned long now;
-    asm volatile("rdtime %0" : "=r"(now)); // 用rdtime 讀目前的硬體 timer counter(tick)
-    unsigned long deadline = now + sec * timer_freq; // tick 
+    unsigned long deadline;
+
+    if (ticks == 0)
+        ticks = 1;
+
+    asm volatile("rdtime %0" : "=r"(now));
+    deadline = now + ticks;
 
     for (int i = 0; i < MAX_TIMERS; i++) {
         if (!timer_queue[i].active) {
@@ -64,10 +73,39 @@ void add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
                 timer_next_deadline = deadline;
                 sbi_set_timer(deadline);
             }
-            return;
+            return 0;
         }
     }
     uart_puts("add_timer: queue full\n");
+    return -1;
+}
+
+unsigned long timer_get_frequency(void) {
+    return timer_freq;
+}
+
+unsigned long timer_us_to_ticks(unsigned long usec) {
+    unsigned long long ticks;
+
+    ticks = (unsigned long long)usec * (unsigned long long)timer_freq;
+    ticks = (ticks + 1000000ULL - 1) / 1000000ULL;
+    if (ticks == 0)
+        ticks = 1;
+    return (unsigned long)ticks;
+}
+
+int add_timer_us(void (*callback)(void *), void *arg, unsigned long usec) {
+    return add_timer_ticks(callback, arg, timer_us_to_ticks(usec));
+}
+
+int add_timer(void (*callback)(void *), void *arg, unsigned long sec) {
+    return add_timer_ticks(callback, arg, sec * timer_freq);
+}
+
+int timer_consume_preempt_pending(void) {
+    int pending = preempt_pending;
+    preempt_pending = 0;
+    return pending;
 }
 
 static void run_expired_timers(void *arg){
@@ -87,21 +125,24 @@ static void run_expired_timers(void *arg){
 void timer_handle_irq(void) {
     unsigned long cur;
     asm volatile("rdtime %0" : "=r"(cur));
+
+    if (next_preempt_deadline != 0 && cur >= next_preempt_deadline) {
+        do {
+            next_preempt_deadline += preempt_interval_ticks;
+        } while (next_preempt_deadline <= cur);
+        preempt_pending = 1; // 需要強制切換
+    }
+
     timer_next_deadline = 0;
     sbi_set_timer(-1UL); // 先把 timecmp 推到極大值，避免 timer interrupt 在 run_tasks 開中斷時持續觸發
     add_task(run_expired_timers, (void *)cur, 0); // priority = 0, 最低, 由 run_tasks() 執行
-}
-
-static void preempt_tick_cb(void *arg) {
-    (void)arg;
-    schedule();
-    add_timer(preempt_tick_cb, 0, 1);
 }
 
 /* 讀 timebase-frequency: 代表 rdtime 每秒增加幾個 tick */
 void timer_init(const void *fdt) {
     int len, off;
     const unsigned char *p;
+    unsigned long now;
 
     off = fdt_path_offset(fdt, "/cpus");
     if (off >= 0) {
@@ -123,5 +164,11 @@ void timer_init(const void *fdt) {
     }
 
 done:
-    add_timer(preempt_tick_cb, 0, 1); // 每 1 秒觸發一次 schedule()，驅動 preemption
+    preempt_interval_ticks = timer_freq / PREEMPT_TICKS_DIVISOR;
+    if (preempt_interval_ticks == 0)
+        preempt_interval_ticks = 1;
+    asm volatile("rdtime %0" : "=r"(now));
+    next_preempt_deadline = now + preempt_interval_ticks;
+    timer_next_deadline = 0;
+    reprogram_timer();
 }

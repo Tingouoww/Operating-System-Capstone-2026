@@ -10,4 +10,8 @@ long  sys_fork(struct pt_regs *regs); // 4
 long  sys_waitpid(long pid); // 5
 void  sys_exit(int status); // 6
 int   sys_stop(long pid); // 7
+void  sys_display(const unsigned int *bmp_image,
+                  unsigned int width,
+                  unsigned int height); // 8
+int   sys_usleep(unsigned int usec); // 9
 #endif

@@ -9,6 +9,7 @@
 #define RUNNING_THREAD 1
 #define ZOMBIE_THREAD 2
 #define WAITING_THREAD 3
+#define SLEEPING_THREAD 4
 
 extern int nr_threads; // Thread Counter
 extern struct task_struct* run_queue;
