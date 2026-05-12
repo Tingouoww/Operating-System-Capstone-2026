@@ -75,12 +75,12 @@ save_context:
 
 .global ret_from_exception
 ret_from_exception:
-    ld s0,  8 * 32(sp)
-    andi s0, s0, (1 << 8)
+    ld s0,  8 * 32(sp) // 取出先前保存的 sstatus
+    andi s0, s0, (1 << 8) // SPP (0 -> U-Mode, 1 -> S-mode)
     bnez s0, 1f
 
-    addi s0, sp, 8 * 35
-    csrw sscratch, s0
+    addi s0, sp, 8 * 35 // 要回 U-mode 要更新 sscratch (trap frame 頂端)
+    csrw sscratch, s0 // 回到 user 前，先把 kernel stack 的可用位置放進 sscratch
 1:
     /* Restore context */
     ld s1,  8 * 31(sp)
@@ -149,7 +149,7 @@ switch_to:
 
     /* Restore Context */
     // 從 next 載入下一個 task 的上下文
-    ld ra, 0(a1)
+    ld ra, 0(a1) // next->thread.ra
     ld sp, 8(a1)
     ld s0, 16(a1)
     ld s1, 24(a1)

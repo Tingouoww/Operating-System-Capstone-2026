@@ -114,6 +114,10 @@ static int fw_cfg_find_file(const char *name) {
 }
 #endif
 
+// CPU 寫東西習慣先放 cache，不會馬上存到 DRAM。但螢幕控制器不看 cache，只看 DRAM
+// 把 start 值搬到 a0 暫存器
+// .word 0x0025200F 發出 cbo.flush a0 指令 (機器碼)
+// 0x0025200F = cbo.flush (a0) 把 a0 所指的那條快取行寫回 DRAM 並使該行無效
 #define cbo_flush(start)                \
     ({                                  \
         asm volatile("mv a0, %0\n\t"    \
@@ -123,14 +127,15 @@ static int fw_cfg_find_file(const char *name) {
                      : "memory", "a0"); \
     })
 
+// *這個函式負責將 D-cache（資料快取）中的指定記憶體範圍強制同步回記憶體（flush）
 void flush_dcache(void *addr, unsigned long len) {
     unsigned long start = (unsigned long)addr & ~(CACHE_BLOCK_SIZE - 1);
     unsigned long end = (unsigned long)addr + len;
 
-    __sync_synchronize();
+    __sync_synchronize(); // 確認 CPU 所有寫入都完成再 FLUSH
     for (unsigned long line = start; line < end; line += CACHE_BLOCK_SIZE) {
         cbo_flush(line);
-        __sync_synchronize();
+        __sync_synchronize(); // 確保 flush 完成
     }
 }
 

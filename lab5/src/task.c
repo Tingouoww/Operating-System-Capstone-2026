@@ -19,8 +19,9 @@ struct task_struct* run_queue = 0;
 static struct task_entry task_queue[MAX_TASKS];
 static volatile int current_task_priority = -1; // -1 : 沒有 task 在跑
 
+/* 獲取目前正在執行的 thread */
 struct task_struct* get_current() {
-    register struct task_struct* current asm("tp");
+    register struct task_struct* current asm("tp"); // tp = thread pointer, 指向 current task_struct
     return current;
 }
 
@@ -45,14 +46,18 @@ void schedule() {
 void idle_init(void){
     struct task_struct *idle_task = 
         (struct task_struct *) allocate(sizeof(struct task_struct));
-    memset(idle_task, 0, sizeof(*idle_task));
+    memset(idle_task, 0, sizeof(*idle_task)); // 先把整個結構清成 0，避免欄位有亂值
     idle_task->pid = nr_threads++;
     idle_task->state = RUNNING_THREAD;
-    idle_task->next = idle_task;
+    idle_task->next = idle_task; // 初始化只有一個 node 的環狀 linked list
     idle_task->parent_pid = -1; 
     idle_task->wait_for_pid = -1;
     run_queue = idle_task;
     
+    /* 
+    把 idle_task 的位址放進 RISC-V 的 tp 暫存器
+    get_current() 會直接從 tp 取出目前 task
+    */
     asm volatile("mv tp, %0" :: "r"(idle_task) : "memory"); 
 }
 
@@ -121,7 +126,7 @@ struct task_struct* thread_create(void (*threadfn)())
     memset(t, 0, sizeof(*t));
 
     stack_top = stack_base + PAGE_SIZE;
-    stack_top &= ~0xFUL; // 16-byte 對齊
+    stack_top &= ~0xFUL; // 16-byte 對齊, 清掉低 4 bits
 
     t->pid = nr_threads++;
     t->state = READY_THREAD;
@@ -130,7 +135,7 @@ struct task_struct* thread_create(void (*threadfn)())
     t->wait_for_pid = -1;
     t->thread.sp = stack_top;
     t->thread.ra = (unsigned long)threadfn;
-    t->next = run_queue->next;
+    t->next = run_queue->next; // 插入 run_queue 後面 (緊接在 idle 後面)
     run_queue->next = t;
 
     return t;
@@ -213,10 +218,12 @@ void run_tasks(void){
 }
 
 /* ------------------------- user exec --------------------------*/
-
+/* user_exec 不會跳進 U-mode，
+    它是建立一個新的 task_struct 排進 run_queue，
+    然後讓 scheduler 在之後切換過去 */
 int user_exec(const char *filename) {
-    // CPIO 掃描找 user_entry
-    unsigned long user_entry = cpio_find_exec(filename);
+    // 取得 user program entry point
+    unsigned long user_entry = cpio_find_exec(filename); 
     if(!user_entry) return -1;
 
     // 分配 kernel stack 和 user stack
@@ -228,11 +235,13 @@ int user_exec(const char *filename) {
         return -1;
     }
 
-    unsigned long kernel_sp = kstack + PAGE_SIZE;
+    unsigned long kernel_sp = kstack + PAGE_SIZE; // 由頂端往下
     unsigned long user_sp   = ustack + PAGE_SIZE;
 
     // 在 kernel stack 頂端建立 fake trap frame
-    struct pt_regs *regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE);
+    // 新建立的 process 沒有真的發生過 trap/syscall/interrupt
+    // kernel stack 上面不存在 trap frame
+    struct pt_regs *regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE); // 挪出空間給 pt_regs 使用, regs -> trap frame 起始位址
     memset(regs, 0, TRAP_FRAME_SIZE);
     regs->sepc    = user_entry;
     regs->sp      = user_sp;
@@ -258,7 +267,9 @@ int user_exec(const char *filename) {
     t->wait_for_pid = -1;
 
     regs->tp      = (unsigned long)t;
-
+    /* 對新建的 user process 來說它以前從來沒有真的跑過，
+    所以沒有一個現成的 kernel call stack 可以繼續。
+    因此幫它造出第一個落點，而那個落點是 ret_from_exception。*/
     // 設定 thread 讓 switch_to 後跳到 ret_from_exception
     extern void ret_from_exception(void);
     t->thread.ra = (unsigned long)ret_from_exception;

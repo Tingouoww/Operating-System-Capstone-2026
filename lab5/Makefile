@@ -14,7 +14,7 @@ LDFLAGS = -T $(LINKER_SCRIPT)
 QEMU ?= qemu-system-riscv64
 TARGET = kernel
 FIT = kernel.fit
-SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/utils.c src/mem_allocator.c src/mem_allocator_test.c src/timer.c src/task.c src/syscall.c
+SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/utils.c src/mem_allocator.c src/mem_allocator_test.c src/timer.c src/task.c src/syscall.c src/video.c src/signal.c
 OBJS = $(notdir $(SRCS:.c=.o))
 OBJS := $(notdir $(OBJS:.S=.o))
 
@@ -31,11 +31,11 @@ board: fit
 run:
 # -DQEMU 是編譯器參數(在預處理階段定義一個巨集 QEMU)
 	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT) CFLAGS="$(CFLAGS) -DQEMU"
-	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -display none -serial stdio
+	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -device ramfb -serial stdio
 
 run-pty:
 	$(MAKE) build LINKER_SCRIPT=$(QEMU_LINKER_SCRIPT) CFLAGS="$(CFLAGS) -DQEMU"
-	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -display none -serial pty
+	$(QEMU) -M virt -m 8G -kernel $(TARGET).bin -initrd initramfs.cpio -device ramfb -serial pty
 
 qemu-dtb:
 	$(QEMU) -machine virt,dumpdtb=qemu.dtb -display none -serial none

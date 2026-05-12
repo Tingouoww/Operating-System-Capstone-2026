@@ -2,6 +2,7 @@
 #define TASK_H
 
 #include "pt_regs.h"
+#include "signal.h"
 
 #define TRAP_FRAME_SIZE (35 * 8)  // 280 bytes
 // THREAD STATE
@@ -16,21 +17,27 @@ extern struct task_struct* run_queue;
 
 struct task_struct {
     struct thread_struct {
-        unsigned long ra;
-        unsigned long sp;
-        unsigned long s[12];
+        unsigned long ra; // function callback address
+        unsigned long sp; // stack pointer, kernel 執行時的 stack 指標, 目前或切換時要恢復的 stack pointer 值
+        unsigned long s[12]; // callee-saved regs
     } thread;
     int pid;
     int state;
     unsigned long kernel_sp;
     unsigned long user_sp;
-    unsigned long stack;
-    unsigned long user_stack;
-    unsigned long user_entry;
+    unsigned long stack; // kernel stack base address
+    unsigned long user_stack; // user stack base address
+    unsigned long user_entry; // user program 開始執行的入口位址
     int parent_pid; // 父 process pid（-1 表示無父）
     int wait_for_pid; // 正在等待哪個 child pid（-1 = 沒有等待）
-    int exit_status; 
-    struct task_struct *next;
+    int exit_status;  // 子行程結束時把結果交給父行程 (但目前其實沒用到, spec 說lab不用)
+    struct task_struct *next; // schedule use
+
+    // ---- POSIX ----
+    void (*signal_handler[MAX_SIGNALS])(int); // 函式指標陣列 (total 32 欄位)
+    unsigned long signal_pending;
+    int in_signal; // 是否在執行 signal handler
+    struct saved_signal_context signal_context;
 };
 
 typedef void (*task_callback_t)(void *arg);

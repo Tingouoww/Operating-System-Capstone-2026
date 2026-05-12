@@ -55,7 +55,7 @@ void do_trap(struct pt_regs *regs) {
     else if(regs->scause == SCAUSE_ECALL_U){
         regs->sepc += 4;  // 先跳過 ecall（parent 和 fork child 的 sepc 都正確）
 
-        // 在 syscall 執行期間重新開啟 S-mode 中斷，保持 kernel preemptible
+        // 在 syscall 執行期間重新開啟 S-mode 中斷，保持 kernel preemptible (system call  需要時間執行)
         asm volatile("csrs sstatus, 0x2");
 
         switch (regs->a7) {
@@ -71,6 +71,9 @@ void do_trap(struct pt_regs *regs) {
                                 (unsigned int)regs->a1,
                                 (unsigned int)regs->a2); break;
             case 9: regs->a0 = sys_usleep((unsigned int)regs->a0); break;
+            case 10: regs->a0 = sys_signal((int)regs->a0, (void (*)(int))regs->a1); break;
+            case 11: sys_sigreturn(regs); break;
+            case 12: regs->a0 = sys_kill((int)regs->a0, (int)regs->a1); break;
             default: regs->a0 = -1; break;
         }
 
@@ -88,6 +91,8 @@ void do_trap(struct pt_regs *regs) {
         //     regs->sepc += 4;
         while(1);
     }
+
+    do_signal(regs); // 返回 user 前檢查 signal
 }
 
 
@@ -95,6 +100,7 @@ void start_kernel(unsigned long hartid, void *dtb) {
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
     mem_allocator_init(dtb);
+    signal_init();
     video_init(dtb);
     shell_init(dtb);
     bootloader_init(hartid, dtb);
@@ -104,7 +110,7 @@ void start_kernel(unsigned long hartid, void *dtb) {
     asm volatile("csrsi sstatus, 0x2");              // SIE
 
     timer_init(dtb);
-    idle_init();
-    thread_create(shell_thread);
-    idle();
+    idle_init(); // 建立 idle_task (pid = 0)
+    thread_create(shell_thread); // pid = 1
+    idle(); // 進入主迴圈
 }
