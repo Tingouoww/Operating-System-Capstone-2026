@@ -2,7 +2,8 @@ OUTPUT_ARCH(riscv) /* Target architecture: RISC-V */
 ENTRY(_start) /* Program entry point */
 SECTIONS
 {
-    . = 0x00200000; /* location counter */
+    . = 0xffffffc000000000; /* location counter */
+    . += 0x00200000;
     _start = .;
     __kernel_start = .;
     .text : { *(.text.boot) *(.text) } /* Boot code first */

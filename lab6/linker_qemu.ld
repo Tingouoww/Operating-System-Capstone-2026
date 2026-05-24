@@ -2,7 +2,8 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS
 {
-    . = 0x80200000;
+    . = 0xffffffc000000000;
+    . += 0x80200000;
     _start = .;
     __kernel_start = .;
     .text : { *(.text.boot) *(.text) }

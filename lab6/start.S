@@ -1,6 +1,9 @@
 .section ".text.boot"
 .global _start
 _start:
+    mv s0, a0                  # 保存 hartid（a0 會被 call 破壞）
+    mv s1, a1                  # 保存 dtb PA（a1 會被 call 破壞）
+
     la a3, __bss_start
     la a4, __bss_stop
     ble a4, a3, clear_bss_done
@@ -9,9 +12,24 @@ clear_bss:
     add a3, a3, 8
     blt a3, a4, clear_bss
 clear_bss_done:
+    la sp, _end                # 暫時 stack（PA）
+    call setup_vm              # 開 MMU，identity + higher-half 都 active
+
+    la t0, .high               # 拿到 PA of .high
+    li t1, 0xffffffc000000000  # VA - PA offset
+    add t0, t0, t1             # VA of .high
+    jr t0                      # 跳到虛擬位址
+
+.high:
+    la sp, _end                # 重設 stack（現在 la 給 VA）
+    csrw sscratch, zero        # 標記目前在 kernel mode
     la a2, handle_exception
     csrw stvec, a2
-    la sp, _end
+    call drop_identity_map     # 清掉 identity mapping
+
+    mv a0, s0                  # 還原 hartid
+    li t0, 0xffffffc000000000
+    add a1, s1, t0             # dtb VA = dtb PA + PAGE_OFFSET
     tail start_kernel
 
 .global handle_exception

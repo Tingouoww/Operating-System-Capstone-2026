@@ -1,0 +1,40 @@
+#ifndef VM_H
+#define VM_H
+
+#define PAGE_OFFSET   0xffffffc000000000UL
+#ifndef PAGE_SIZE
+#define PAGE_SIZE     (1UL << 12)
+#endif
+#define PMD_SIZE      (1UL << 21)
+#define PGD_SIZE      (1UL << 30)
+
+#define PA_TO_VA(pa) ((unsigned long)(pa) + PAGE_OFFSET)
+#define VA_TO_PA(va) ((unsigned long)(va) - PAGE_OFFSET)
+
+/* PTE descriptor bits (Sv39) */
+#define PTE_V  (1UL << 0)  
+#define PTE_R  (1UL << 1)
+#define PTE_W  (1UL << 2)
+#define PTE_X  (1UL << 3)
+#define PTE_U  (1UL << 4)
+#define PTE_G  (1UL << 5)
+#define PTE_A  (1UL << 6)
+#define PTE_D  (1UL << 7)
+
+#define PROT_KERNEL (PTE_V | PTE_R | PTE_W | PTE_X | PTE_G | PTE_A | PTE_D)
+#define PROT_MMIO (PTE_V | PTE_R | PTE_W | PTE_G | PTE_A | PTE_D)
+
+#define MAKE_PTE(pa, flags) ((((unsigned long)(pa)) >> 12) << 10 | (flags))
+#define SATP_SV39           (8UL << 60)
+#define MAKE_SATP(pgd_pa)   (SATP_SV39 | ((unsigned long)(pgd_pa) >> 12))
+
+/* User space prot flags */
+#define PROT_USER_RX  (PTE_V | PTE_R | PTE_X | PTE_U | PTE_A | PTE_D)
+#define PROT_USER_RW  (PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D)
+
+void setup_vm(void);
+void drop_identity_map(void);
+void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size,
+               unsigned long pa, unsigned long prot);
+
+#endif
