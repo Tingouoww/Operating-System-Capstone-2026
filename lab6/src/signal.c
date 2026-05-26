@@ -3,29 +3,46 @@
 #include "syscall.h"
 #include "uart.h"
 #include "mem_allocator.h"
-
-unsigned long trampoline_uaddr;
+#include "utils.h"
+#include "vm.h"
 
 void signal_init(void) {
-    // 分配一頁記憶體當 trampoline
-    unsigned long page = (unsigned long)buddy_alloc(0);  // order 0 = 4KB
-    if (!page) {
-        uart_puts("signal_init: failed to alloc trampoline\n");
-        return;
+    /*
+     * Signal trampoline 改為每個 process 各自 map 一頁到固定的 user VA，
+     * signal_init 目前不需要做全域配置。
+     */
+}
+
+int signal_setup_user_pages(unsigned long *proc_pgd) {
+    unsigned long trampoline_page;
+    unsigned long signal_stack_page;
+    unsigned int *trampoline_code;
+
+    if (!proc_pgd)
+        return -1;
+
+    trampoline_page = (unsigned long)buddy_alloc(0);
+    signal_stack_page = (unsigned long)buddy_alloc(0);
+    if (!trampoline_page || !signal_stack_page) {
+        if (trampoline_page)
+            buddy_free((void *)trampoline_page);
+        if (signal_stack_page)
+            buddy_free((void *)signal_stack_page);
+        return -1;
     }
 
-    // 寫入兩條 RISC-V 指令
-    unsigned int *t = (unsigned int *)page;
-    t[0] = 0x00b00893u;  // li a7, 11  (sigreturn syscall number)
-    t[1] = 0x00000073u;  // ecall
+    memset((void *)trampoline_page, 0, PAGE_SIZE);
+    memset((void *)signal_stack_page, 0, PAGE_SIZE);
 
-    // 記住這個位址，之後 do_signal 把 handler 的 ra 設成它
-    trampoline_uaddr = page;
+    trampoline_code = (unsigned int *)trampoline_page;
+    trampoline_code[0] = 0x00b00893u;  // li a7, 11  (sigreturn syscall number)
+    trampoline_code[1] = 0x00000073u;  // ecall
 
-    /*
-    trampoline_page 就是 kernel 幫 user 準備好的回家的位址，
-    讓 handler 結束後能自動呼叫 sigreturn 回到 kernel。
-    */
+    map_pages(proc_pgd, USER_TRAMPOLINE_VA, PAGE_SIZE,
+              VA_TO_PA(trampoline_page), PROT_USER_RX);
+    map_pages(proc_pgd, USER_SIGNAL_STACK_VA, PAGE_SIZE,
+              VA_TO_PA(signal_stack_page), PROT_USER_RW);
+    return 0;
 }
 
 // 10
@@ -43,14 +60,10 @@ void sys_sigreturn(struct pt_regs *regs){
 
     struct task_struct *cur = get_current();
 
-    if(cur->signal_context.signal_stack){
-        buddy_free((void*)cur->signal_context.signal_stack);
-        cur->signal_context.signal_stack = 0;
-    }
-
     // 還原原始 context，覆蓋整個 trap frame
     // 這樣 ret_from_exception 會用原本的 sepc/sp/regs 做 sret
     *regs = cur->signal_context.save_regs;
+    cur->signal_context.signal_stack = 0;
     cur->in_signal = 0;
 }
 
@@ -86,15 +99,10 @@ void do_signal(struct pt_regs *regs) {
     // 保存原始 trap frame
     cur->signal_context.save_regs = *regs; // handler 跑完之後，sigreturn 會把這份備份還原
 
-    // 分配 signal stack
-    unsigned long sig_stack = (unsigned long)buddy_alloc(0);
-    if (!sig_stack) return;
-    cur->signal_context.signal_stack = sig_stack;
-
     // 修改 trap frame → sret 將跳去執行 handler（U-mode）
     regs->sepc = (unsigned long)handler;       // handler 進入點
-    regs->sp   = sig_stack + PAGE_SIZE;        // 獨立的 signal stack
-    regs->ra   = trampoline_uaddr;             // handler return → trampoline → sigreturn
+    regs->sp   = USER_SIGNAL_STACK_VA + PAGE_SIZE;
+    regs->ra   = USER_TRAMPOLINE_VA;           // handler return → trampoline → sigreturn
     regs->a0   = (unsigned long)signum;        // 傳入信號號碼
 
     cur->in_signal = 1;

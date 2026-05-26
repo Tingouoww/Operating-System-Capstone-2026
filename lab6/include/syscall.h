@@ -9,7 +9,6 @@ void sys_sigreturn(struct pt_regs *regs); // 11
 int sys_kill(int pid, int signum); // 12
 void do_signal(struct pt_regs *regs);
 void signal_init(void);
-extern unsigned long trampoline_uaddr;
 
 long  sys_getpid(void); // 0
 long  sys_uart_read(char *buf, long count); // 1

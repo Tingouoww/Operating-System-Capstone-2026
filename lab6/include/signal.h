@@ -11,4 +11,6 @@ struct saved_signal_context{
     unsigned long signal_stack;
 };
 
+int signal_setup_user_pages(unsigned long *proc_pgd);
+
 #endif

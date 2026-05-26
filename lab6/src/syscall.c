@@ -6,6 +6,9 @@
 #include "uart.h"
 #include "timer.h"
 #include "video.h"
+#include "vm.h"
+
+#define USER_PATH_MAX 256
 
 static void wake_sleeping_task(void *arg) {
     int pid = (int)(unsigned long)arg;
@@ -21,120 +24,191 @@ long sys_getpid(void){
 
 /* Read count bytes into buf. Return the number of bytes read. */
 long sys_uart_read(char *buf, long count){
-    for (long i = 0; i < count; i++)
-        buf[i] = uart_getc();
+    struct task_struct *cur = get_current();
+
+    if (!buf || count <= 0 || !cur->pgd)
+        return 0;
+
+    for (long i = 0; i < count; i++) {
+        char ch = uart_getc();
+
+        if (copy_to_user_pgd(cur->pgd, buf + i, &ch, 1) < 0)
+            return (i > 0) ? i : -1;
+    }
     return count;
 } // 1
 
 /* Write count bytes from buf. Return the number of bytes written. */
 long sys_uart_write(const char *buf, long count){
+    struct task_struct *cur = get_current();
     unsigned long sstatus_save;
+    long written = 0;
+    char chunk_buf[128];
 
-    if (!buf || count <= 0)
+    if (!buf || count <= 0 || !cur->pgd)
         return 0;
 
     // Keep each write() contiguous on the console so preemption
     // does not interleave bytes from different processes.
     asm volatile("csrrci %0, sstatus, 0x2" : "=r"(sstatus_save)); // close interrupt, 保存目前 sstatus 進 sstatus_save
-    for (long i = 0; i < count; i++)
-        uart_putc(buf[i]);
+
+    while (written < count) {
+        long chunk = count - written;
+
+        if (chunk > (long)sizeof(chunk_buf))
+            chunk = (long)sizeof(chunk_buf);
+        if (copy_from_user_pgd(cur->pgd, chunk_buf, buf + written,
+                               (unsigned long)chunk) < 0) {
+            asm volatile("csrw sstatus, %0" :: "r"(sstatus_save));
+            return (written > 0) ? written : -1;
+        }
+        for (long i = 0; i < chunk; i++)
+            uart_putc(chunk_buf[i]);
+        written += chunk;
+    }
+
     asm volatile("csrw sstatus, %0" :: "r"(sstatus_save)); // 恢復原本中斷狀態
-    return count;
+    return written;
 } // 2
 
 int sys_exec(struct pt_regs *regs, const char *path){
-    // 找到新程式
-    unsigned long new_entry = cpio_find_exec(path); // 取得 user program entry point
-    if (!new_entry) return -1;
-
     struct task_struct *cur = get_current();
+    char kpath[USER_PATH_MAX];
+    unsigned long code_va;
+    unsigned long code_size;
+
+    if (!cur->pgd)
+        return -1;
+    if (copy_string_from_user_pgd(cur->pgd, kpath, path, sizeof(kpath)) < 0)
+        return -1;
+
+    code_va   = cpio_find_exec(kpath);
+    code_size = cpio_find_exec_size(kpath);
+    if (!code_va || !code_size) return -1;
+
     unsigned long new_ustack = (unsigned long)buddy_alloc(0);
-    unsigned long new_user_sp;
+    unsigned long *new_pgd   = alloc_user_pgd();
+    if (!new_ustack || !new_pgd) {
+        if (new_ustack) buddy_free((void *)new_ustack);
+        if (new_pgd)    free_user_pgd(new_pgd);
+        return -1;
+    }
 
-    if (!new_ustack) return -1;
+    // 逐頁複製 code 到新 buddy 頁（避免 CPIO 非 4KB 對齊問題）
+    for (unsigned long offset = 0; offset < code_size; offset += PAGE_SIZE) {
+        unsigned long page = (unsigned long)buddy_alloc(0);
+        if (!page) {
+            free_user_pgd(new_pgd);   // 釋放已 map 的頁面
+            buddy_free((void *)new_ustack);
+            return -1;
+        }
+        unsigned long copy_bytes = code_size - offset;
+        if (copy_bytes > PAGE_SIZE) copy_bytes = PAGE_SIZE;
+        memset((void *)page, 0, PAGE_SIZE);
+        mem_cpy((void *)page, (void *)(code_va + offset), copy_bytes);
+        map_pages(new_pgd, USER_CODE_VA + offset, PAGE_SIZE, VA_TO_PA(page), PROT_USER_RX);
+    }
+    map_pages(new_pgd, USER_STACK_VA, PAGE_SIZE, VA_TO_PA(new_ustack), PROT_USER_RW);
+    if (signal_setup_user_pages(new_pgd) < 0) {
+        free_user_pgd(new_pgd);
+        return -1;
+    }
 
-    // 新 stack 準備好後再替換，避免 exec 失敗時把目前 process 弄壞
-    if (cur->user_stack) buddy_free((void *)cur->user_stack);
-    new_user_sp = new_ustack + PAGE_SIZE;
+    // 先切到新頁表再釋放舊的，確保 kernel 在切換過程中有效
+    unsigned long *old_pgd = cur->pgd;
+    cur->pgd        = new_pgd;
     cur->user_stack = new_ustack;
-    cur->user_sp    = new_user_sp;
-    cur->user_entry = new_entry;
+    cur->user_entry = USER_CODE_VA;
+    cur->user_sp    = USER_STACK_VA + PAGE_SIZE;
+    memset(cur->signal_handler, 0, sizeof(cur->signal_handler));
+    cur->signal_pending = 0;
+    cur->in_signal = 0;
+    memset(&cur->signal_context, 0, sizeof(cur->signal_context));
 
-    // 重建 user-visible trap frame，讓新程式從乾淨狀態開始
+    asm volatile("csrw satp, %0\nsfence.vma zero, zero\n"
+                 : : "r"(MAKE_SATP(VA_TO_PA((unsigned long)new_pgd))) : "memory");
+
+    // 舊位址空間（含 code + stack 資料頁）由 free_user_pgd 一次釋放
+    if (old_pgd) free_user_pgd(old_pgd);
+
+    // 重建 trap frame 讓新程式從乾淨狀態開始
     memset(regs, 0, sizeof(*regs));
-    regs->sepc = new_entry;
-    regs->sp   = new_user_sp;
-    regs->tp   = (unsigned long)cur;
+    regs->sepc    = USER_CODE_VA;
+    regs->sp      = USER_STACK_VA + PAGE_SIZE;
+    regs->tp      = (unsigned long)cur;
     regs->sstatus = (1UL << 5);  // SPIE=1, SPP=0
     return 0;
 } // 3
 
-/* 
+/*
 fork() 的核心目標
 讓 child process 從 parent 的 fork() 呼叫點繼續執行，
-但 child 的回傳值為 0，parent 的回傳值為 child 的 pid。 
+但 child 的回傳值為 0，parent 的回傳值為 child 的 pid。
 */
 long sys_fork(struct pt_regs *regs){
     struct task_struct *cur = get_current();
 
-    // 分配記憶體
-    unsigned long ckernel = (unsigned long)buddy_alloc(0); // child kernel stack base address
-    unsigned long cuser = (unsigned long)buddy_alloc(0); // child user stack base address
-    struct task_struct *child;
-    unsigned long child_ksp = ckernel + PAGE_SIZE; // stack 高往低  
-    unsigned long child_usp = cuser + PAGE_SIZE;
+    unsigned long ckernel    = (unsigned long)buddy_alloc(0);
+    unsigned long *child_pgd = alloc_user_pgd();
+    struct task_struct *child = allocate(sizeof(*child));
 
-    if (!ckernel || !cuser) {
-        if (ckernel) buddy_free((void *)ckernel);
-        if (cuser) buddy_free((void *)cuser);
+    if (!ckernel || !child_pgd || !child) {
+        if (ckernel)   buddy_free((void *)ckernel);
+        if (child_pgd) free_user_pgd(child_pgd);
+        if (child)     free(child);
         return -1;
     }
 
-    //  把 parent 的整個 user stack 內容完整複製到 child 的 user stack
-    mem_cpy((void*)cuser, (void*)cur->user_stack, PAGE_SIZE);
-
-    // 在 child kernel stack 上 copy trap frame
-    struct pt_regs *child_regs = (struct pt_regs *)(child_ksp - TRAP_FRAME_SIZE); // 在 child kernel stack 的頂部，往下預留 TRAP_FRAME_SIZE 的空間，把那塊空間當作 pt_regs（trap frame）來使用。
-    *child_regs = *regs; // copy 整個 trap frame
-
-    // child 的 fork() return value 為 0
-    child_regs->a0 = 0;
-
-    // 修正 sp : 維持相對於 user stack top 的偏移
-    unsigned long sp_offset = cur->user_sp - regs->sp; // 已使用的 stack 大小
-    child_regs->sp = child_usp - sp_offset;
-    
-    // 建立 child task_struct
-    child = allocate(sizeof(*child));
-    if (!child) {
+    // 深層複製 parent 的所有 user 頁框到 child 的獨立頁框
+    if (copy_user_pages(cur->pgd, child_pgd) < 0) {
         buddy_free((void *)ckernel);
-        buddy_free((void *)cuser);
+        free_user_pgd(child_pgd);
+        free(child);
         return -1;
     }
-    memset(child, 0, sizeof(*child));
 
-    // child 繼承 parent 的 signal handlers（sig_pending、in_signal 已被 memset 清零）
+    // 從 child_pgd 查出 child user stack 的物理頁 VA
+    unsigned long child_ustack_pa = lookup_user_pa(child_pgd, USER_STACK_VA);
+    if (!child_ustack_pa) {
+        buddy_free((void *)ckernel);
+        free_user_pgd(child_pgd);
+        free(child);
+        return -1;
+    }
+    unsigned long child_ustack_va = PA_TO_VA(child_ustack_pa);
+
+    // 在 child kernel stack 上建立 trap frame
+    unsigned long child_ksp = ckernel + PAGE_SIZE;
+    struct pt_regs *child_regs = (struct pt_regs *)(child_ksp - TRAP_FRAME_SIZE);
+    *child_regs = *regs;
+    child_regs->a0 = 0;  // child fork() 回傳 0
+
+    // sp 維持相對 user stack top 的偏移不變
+    unsigned long sp_offset = (USER_STACK_VA + PAGE_SIZE) - regs->sp;
+    child_regs->sp = USER_STACK_VA + PAGE_SIZE - sp_offset;
+
+    memset(child, 0, sizeof(*child));
+    // child 繼承 parent 的 signal handlers
     for (int i = 0; i < MAX_SIGNALS; i++)
         child->signal_handler[i] = cur->signal_handler[i];
-    child->pid = nr_threads++;
-    child->state = READY_THREAD;
+    child->pid        = nr_threads++;
+    child->state      = READY_THREAD;
     child->stack      = ckernel;
     child->kernel_sp  = child_ksp;
-    child->user_stack = cuser;
-    child->user_sp    = child_usp;
+    child->user_stack = child_ustack_va;  // VA，供 free_user_pgd 追蹤
+    child->user_sp    = USER_STACK_VA + PAGE_SIZE;
     child->user_entry = cur->user_entry;
+    child->pgd        = child_pgd;
     child->parent_pid = cur->pid;
     child->wait_for_pid = -1;
-    child_regs->tp = (unsigned long)child;
+    child_regs->tp    = (unsigned long)child;
 
-    // 決定 child 第一次被排程時的行為
     extern void ret_from_exception(void);
     child->thread.ra = (unsigned long)ret_from_exception;
     child->thread.sp = (unsigned long)child_regs;
 
     child->next = run_queue->next;
     run_queue->next = child;
-
     return child->pid;  // parent 的返回值
 } // 4
 
@@ -152,10 +226,9 @@ long sys_waitpid(long pid){
             // 從 run queue 移除 child
             struct task_struct *t = run_queue;
             while (t->next != run_queue && t->next != child) t = t->next;
-            // t->next == cjild 或 t->next == run_queue(繞一圈回開頭，沒找到 child)
-            if (t->next == child) t->next = child->next; // 先把 child 從排程佇列移除
-            // 釋放資源
-            if (child->user_stack) buddy_free((void *)child->user_stack);
+            if (t->next == child) t->next = child->next;
+            // 釋放 user 位址空間（含所有資料頁）
+            if (child->pgd) { free_user_pgd(child->pgd); child->pgd = NULL; }
             buddy_free((void *)child->stack);
             free(child);
         }
@@ -191,8 +264,8 @@ long sys_waitpid(long pid){
 void sys_exit(int status){
     struct task_struct *cur = get_current();
 
-    // 釋放 user stack（kernel stack 在 kill_zombies 清理）
-    if (cur->user_stack) buddy_free((void *)cur->user_stack);
+    // 釋放 user 位址空間（含 code + stack 所有資料頁）；kernel stack 在 kill_zombies 清理
+    if (cur->pgd) { free_user_pgd(cur->pgd); cur->pgd = NULL; }
     cur->user_stack = 0;
     cur->exit_status = status;
     cur->state = ZOMBIE_THREAD;
@@ -215,7 +288,7 @@ int sys_stop(long pid){
     if ((int)pid == get_current()->pid) return -1;
     struct task_struct *t = find_task_by_pid((int)pid);
     if (!t) return -1;
-    if (t->user_stack) buddy_free((void *)t->user_stack);
+    if (t->pgd) { free_user_pgd(t->pgd); t->pgd = NULL; }
     t->user_stack = 0;
     t->state = ZOMBIE_THREAD;
     // 喚醒可能等待此 pid 的 parent
@@ -233,10 +306,15 @@ int sys_stop(long pid){
 void sys_display(const unsigned int *bmp_image,
                  unsigned int width,
                  unsigned int height) {
+    struct task_struct *cur = get_current();
+
     if (!bmp_image || width == 0 || height == 0)
         return;
 
-    video_display(bmp_image, width, height);
+    if (cur->pgd)
+        (void)video_display_user(bmp_image, width, height, cur->pgd);
+    else
+        video_display(bmp_image, width, height);
 } // 8
 
 int sys_usleep(unsigned int usec){
