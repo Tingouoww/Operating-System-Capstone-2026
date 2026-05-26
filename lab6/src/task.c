@@ -248,10 +248,10 @@ int user_exec(const char *filename) {
     unsigned long kstack = (unsigned long)buddy_alloc(0);
     unsigned long ustack = (unsigned long)buddy_alloc(0);
     unsigned long *proc_pgd = alloc_user_pgd();
-    if(!kstack || !ustack) {
-        if (kstack) buddy_free((void *)kstack);
-        if (ustack) buddy_free((void *)ustack);
-        if (proc_pgd)  free_user_pgd(proc_pgd);
+    if(!kstack || !ustack || !proc_pgd) {
+        if (kstack)   buddy_free((void *)kstack);
+        if (ustack)   buddy_free((void *)ustack);
+        if (proc_pgd) free_user_pgd(proc_pgd);
         return -1;
     }
 
@@ -292,7 +292,7 @@ int user_exec(const char *filename) {
     struct task_struct *t = allocate(sizeof(*t));
     if (!t) {
         buddy_free((void *)kstack);
-        buddy_free((void *)ustack);
+        /* ustack 已經 map 進 proc_pgd，由 free_user_pgd 統一釋放，不可再 buddy_free */
         free_user_pgd(proc_pgd);
         return -1;
     }

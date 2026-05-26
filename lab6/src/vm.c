@@ -142,6 +142,7 @@ static void pagewalk(unsigned long *proc_pgd, unsigned long va, unsigned long pa
 
     if (!(proc_pgd[vpn2] & PTE_V)) {
         pmd_table = buddy_alloc(0);
+        if (!pmd_table) return;
         memset(pmd_table, 0, PAGE_SIZE);
         proc_pgd[vpn2] = MAKE_PTE(VA_TO_PA((unsigned long)pmd_table), PTE_V);
     } else {
@@ -150,6 +151,7 @@ static void pagewalk(unsigned long *proc_pgd, unsigned long va, unsigned long pa
 
     if (!(pmd_table[vpn1] & PTE_V)) {
         pte_table = buddy_alloc(0);
+        if (!pte_table) return;
         memset(pte_table, 0, PAGE_SIZE);
         pmd_table[vpn1] = MAKE_PTE(VA_TO_PA((unsigned long)pte_table), PTE_V);
     } else {
@@ -230,6 +232,8 @@ unsigned long lookup_user_pa(unsigned long *pgd_va, unsigned long va){
     if (!(pmd[vpn1] & PTE_V)) return 0;
     unsigned long *pte = (unsigned long *)PA_TO_VA((pmd[vpn1] >> 10) << 12);
     if (!(pte[vpn0] & PTE_V)) return 0;
+    /* 拒絕 kernel page：沒有 PTE_U 的 entry 不屬於 user space */
+    if (!(pte[vpn0] & PTE_U)) return 0;
     return (pte[vpn0] >> 10) << 12;
 }
 
