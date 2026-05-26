@@ -10,6 +10,7 @@
 #include "timer.h"
 #include "syscall.h"
 #include "task.h"
+#include "vm.h"
 
 #include <stdint.h>
 
@@ -82,12 +83,12 @@ void shell_init(const void *fdt)
 
     if (initrd_start != 0)
     {
-        initrd_base = (const void *)initrd_start;
+        initrd_base = (const void *)PA_TO_VA(initrd_start);
     }
 
     if (initrd_start != 0 && initrd_end > initrd_start)
     {
-        initrd_init((void *)initrd_start, (void *)initrd_end);
+        initrd_init((void *)PA_TO_VA(initrd_start), (void *)PA_TO_VA(initrd_end));
     }
     else
     {

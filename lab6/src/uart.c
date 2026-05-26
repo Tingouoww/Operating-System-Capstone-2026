@@ -1,6 +1,7 @@
 #include "uart.h"
 #include "fdt.h"
 #include "sbi.h"
+#include "vm.h"
 
 uintptr_t uart_base;
 
@@ -33,10 +34,10 @@ uintptr_t uart_base;
 // ─── PLIC configuration ──────────────────────────────────────────────────────
 
 #ifdef QEMU
-#define PLIC_BASE 0x0c000000UL
+#define PLIC_BASE (0x0c000000UL + PAGE_OFFSET)
 #define UART_IRQ  10
 #else
-#define PLIC_BASE 0xe0000000UL
+#define PLIC_BASE (0xe0000000UL + PAGE_OFFSET)
 #define UART_IRQ  42 // Uart0 interrupt source (117)
 #endif
 
@@ -167,7 +168,7 @@ void uart_init(const void *fdt) {
         return;
 
     if (addr != 0)
-        uart_base = addr;
+        uart_base = addr + PAGE_OFFSET;  // FDT 給的是 PA，MMU 開後要用 VA
 }
 
 // ─── uart_interrupt_init ─────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 #include "video.h"
-
+#include "vm.h"
 #include "utils.h"
 
 #include <stdint.h>
@@ -12,9 +12,9 @@
 #define CACHE_BLOCK_SIZE  64UL
 
 #ifdef QEMU
-#define FB_BASE 0x87000000UL
+#define FB_BASE (0x87000000UL + PAGE_OFFSET)
 #else
-#define FB_BASE 0x7f700000UL
+#define FB_BASE (0x7f700000UL + PAGE_OFFSET)
 #endif
 
 #ifdef QEMU
@@ -42,7 +42,7 @@ static uint64_t bswap64(uint64_t x) {
 }
 
 #define QEMU_PACKED __attribute__((packed))
-#define FW_CFG_BASE    0x10100000UL
+#define FW_CFG_BASE    (0x10100000UL + PAGE_OFFSET)
 #define FW_CFG_DMA_CTL_ERROR   0x01U
 #define FW_CFG_DMA_CTL_READ    0x02U
 #define FW_CFG_DMA_CTL_SELECT  0x08U
@@ -76,13 +76,15 @@ static volatile uint64_t *const fw_cfg_dma = (volatile uint64_t *)(FW_CFG_BASE +
 static void fw_cfg_dma_transfer(void *address,
                                 uint32_t length,
                                 uint32_t control) {
+    // QEMU DMA 裝置需要實體位址（PA），不能傳 VA
     struct fwcfg_dma_access access = {
         .control = bswap32(control),
         .length = bswap32(length),
-        .address = bswap64((uint64_t)(uintptr_t)address),
+        .address = bswap64((uint64_t)VA_TO_PA((unsigned long)address)),
     };
 
-    *fw_cfg_dma = bswap64((uint64_t)(uintptr_t)&access);
+    // &access 是 stack 上的 VA，也要轉成 PA 讓 QEMU 找得到
+    *fw_cfg_dma = bswap64((uint64_t)VA_TO_PA((unsigned long)&access));
     while ((bswap32(access.control) & ~FW_CFG_DMA_CTL_ERROR) != 0)
         ;
 }
@@ -145,7 +147,7 @@ void video_init(const void *fdt) {
 #ifdef QEMU
     int entry;
     struct ramfb_config cfg = {
-        .addr = bswap64(FB_BASE),
+        .addr = bswap64((uint64_t)VA_TO_PA(FB_BASE)),
         .fourcc = bswap32(XRGB8888),
         .flags = bswap32(0),
         .width = bswap32(FB_WIDTH),
@@ -182,4 +184,43 @@ void video_display(const unsigned int *bmp_image,
         memcpy(dst, src, line_bytes);
         flush_dcache(dst, line_bytes);
     }
+}
+
+int video_display_user(const unsigned int *bmp_image,
+                       unsigned int width,
+                       unsigned int height,
+                       unsigned long *user_pgd) {
+    unsigned int *fb = (unsigned int *)(uintptr_t)FB_BASE;
+    unsigned int start_x;
+    unsigned int start_y;
+
+    if (!bmp_image || !user_pgd || width == 0 || height == 0)
+        return -1;
+    if (width > FB_WIDTH || height > FB_HEIGHT)
+        return -1;
+
+    start_x = (FB_WIDTH - width) / 2U;
+    start_y = (FB_HEIGHT - height) / 2U;
+
+    for (unsigned int y = 0; y < height; y++) {
+        unsigned char *dst = (unsigned char *)(fb + (start_y + y) * FB_WIDTH + start_x);
+        unsigned long src_va = (unsigned long)(bmp_image + y * width);
+        unsigned long line_bytes = (unsigned long)width * sizeof(unsigned int);
+        unsigned long copied = 0;
+
+        while (copied < line_bytes) {
+            unsigned long chunk = line_bytes - copied;
+
+            if (chunk > 256)
+                chunk = 256;
+            if (copy_from_user_pgd(user_pgd, dst + copied,
+                                   (const void *)(src_va + copied), chunk) < 0)
+                return -1;
+            copied += chunk;
+        }
+
+        flush_dcache(dst, line_bytes);
+    }
+
+    return 0;
 }
