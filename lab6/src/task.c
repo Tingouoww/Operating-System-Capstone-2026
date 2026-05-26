@@ -3,6 +3,7 @@
 #include "mem_allocator.h"
 #include "utils.h"
 #include "cpio.h"
+#include "vm.h"
 
 #define MAX_TASKS 64
 
@@ -27,6 +28,22 @@ struct task_struct* get_current() {
 
 extern void switch_to(struct task_struct* prev, struct task_struct* next);
 
+static void switch_mm(struct task_struct *next) {
+    unsigned long pgd_pa;
+    if (next->pgd) {
+        pgd_pa = VA_TO_PA((unsigned long)next->pgd);
+    } else {
+        // kernel thread：用全域 kernel PGD
+        extern unsigned long pgd[];
+        pgd_pa = VA_TO_PA((unsigned long)pgd);
+    }
+    asm volatile(
+        "csrw satp, %0\n"
+        "sfence.vma zero, zero\n"
+        : : "r"(MAKE_SATP(pgd_pa)) : "memory"
+    );
+}
+
 void schedule() {
     struct task_struct* current = get_current();
     struct task_struct* next = current->next;
@@ -40,6 +57,7 @@ void schedule() {
     
     if (current->state == RUNNING_THREAD) current->state = READY_THREAD;
     next->state = RUNNING_THREAD;
+    switch_mm(next);           // 切換位址空間
     switch_to(current, next);
 }
 
@@ -94,7 +112,7 @@ void kill_zombies(){
             }
             if (!parent_waiting) {
                 prev->next = next;
-                if (cur->user_stack) buddy_free((void *)cur->user_stack);
+                if (cur->pgd) { free_user_pgd(cur->pgd); cur->pgd = NULL; }
                 buddy_free((void *)cur->stack);
                 free(cur);
                 // prev 不移動
@@ -218,33 +236,55 @@ void run_tasks(void){
 }
 
 /* ------------------------- user exec --------------------------*/
-/* user_exec 不會跳進 U-mode，
+/*  user_exec 不會跳進 U-mode，
     它是建立一個新的 task_struct 排進 run_queue，
     然後讓 scheduler 在之後切換過去 */
 int user_exec(const char *filename) {
-    // 取得 user program entry point
-    unsigned long user_entry = cpio_find_exec(filename); 
-    if(!user_entry) return -1;
+    unsigned long code_va = cpio_find_exec(filename);
+    unsigned long code_size = cpio_find_exec_size(filename);
+    if(!code_va || !code_size) return -1;
 
     // 分配 kernel stack 和 user stack
     unsigned long kstack = (unsigned long)buddy_alloc(0);
     unsigned long ustack = (unsigned long)buddy_alloc(0);
+    unsigned long *proc_pgd = alloc_user_pgd();
     if(!kstack || !ustack) {
         if (kstack) buddy_free((void *)kstack);
         if (ustack) buddy_free((void *)ustack);
+        if (proc_pgd)  free_user_pgd(proc_pgd);
+        return -1;
+    }
+
+    // 把程式碼逐頁複製到新分配的頁框（CPIO 資料不保證 4KB 對齊）
+    for (unsigned long offset = 0; offset < code_size; offset += PAGE_SIZE) {
+        unsigned long page = (unsigned long)buddy_alloc(0);
+        if (!page) {
+            buddy_free((void *)kstack);
+            buddy_free((void *)ustack);
+            free_user_pgd(proc_pgd);
+            return -1;
+        }
+        unsigned long copy_bytes = code_size - offset;
+        if (copy_bytes > PAGE_SIZE) copy_bytes = PAGE_SIZE;
+        memset((void *)page, 0, PAGE_SIZE);
+        mem_cpy((void *)page, (void *)(code_va + offset), copy_bytes);
+        map_pages(proc_pgd, USER_CODE_VA + offset, PAGE_SIZE, VA_TO_PA(page), PROT_USER_RX);
+    }
+    map_pages(proc_pgd, USER_STACK_VA, PAGE_SIZE, VA_TO_PA(ustack), PROT_USER_RW);
+    if (signal_setup_user_pages(proc_pgd) < 0) {
+        buddy_free((void *)kstack);
+        free_user_pgd(proc_pgd);
         return -1;
     }
 
     unsigned long kernel_sp = kstack + PAGE_SIZE; // 由頂端往下
-    unsigned long user_sp   = ustack + PAGE_SIZE;
-
     // 在 kernel stack 頂端建立 fake trap frame
     // 新建立的 process 沒有真的發生過 trap/syscall/interrupt
     // kernel stack 上面不存在 trap frame
     struct pt_regs *regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE); // 挪出空間給 pt_regs 使用, regs -> trap frame 起始位址
     memset(regs, 0, TRAP_FRAME_SIZE);
-    regs->sepc    = user_entry;
-    regs->sp      = user_sp;
+    regs->sepc    = USER_CODE_VA;
+    regs->sp      = USER_STACK_VA + PAGE_SIZE;
     // sstatus: SPP=0 (U-mode), SPIE=1 (enable interrupt)
     regs->sstatus = (1UL << 5);  // SPIE=1, SPP=0
 
@@ -253,6 +293,7 @@ int user_exec(const char *filename) {
     if (!t) {
         buddy_free((void *)kstack);
         buddy_free((void *)ustack);
+        free_user_pgd(proc_pgd);
         return -1;
     }
     memset(t, 0, sizeof(*t));
@@ -261,8 +302,9 @@ int user_exec(const char *filename) {
     t->stack       = kstack;
     t->kernel_sp   = kernel_sp;
     t->user_stack  = ustack;
-    t->user_sp     = user_sp;
-    t->user_entry  = user_entry;
+    t->user_sp     = USER_STACK_VA + PAGE_SIZE;
+    t->user_entry  = USER_CODE_VA;
+    t->pgd         = proc_pgd;
     t->parent_pid  = get_current()->pid;
     t->wait_for_pid = -1;
 

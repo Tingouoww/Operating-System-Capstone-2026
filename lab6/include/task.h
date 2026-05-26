@@ -26,8 +26,9 @@ struct task_struct {
     unsigned long kernel_sp;
     unsigned long user_sp;
     unsigned long stack; // kernel stack base address
-    unsigned long user_stack; // user stack base address
-    unsigned long user_entry; // user program 開始執行的入口位址
+    unsigned long user_stack; // user stack base address(VA)
+    unsigned long user_entry; // user program 開始執行的入口位址(VA)
+    unsigned long *pgd; // process 的 PGD(VA), null 表示 kernel thread
     int parent_pid; // 父 process pid（-1 表示無父）
     int wait_for_pid; // 正在等待哪個 child pid（-1 = 沒有等待）
     int exit_status;  // 子行程結束時把結果交給父行程 (但目前其實沒用到, spec 說lab不用)
