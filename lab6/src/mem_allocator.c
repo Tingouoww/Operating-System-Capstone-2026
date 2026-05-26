@@ -3,6 +3,7 @@
 #include "list.h"
 #include "utils.h"
 #include "uart.h"
+#include "vm.h"
 
 /* page frame 變成 chunk pool 後，不管這些 chunk 有無被用到，pool 都會留著*/
 
@@ -297,7 +298,7 @@ static void *startup_alloc(unsigned long size)
              */
             startup_alloc_cursor = addr + alloc_size;
             memory_reserve(addr, size);
-            return (void *)addr;
+            return (void *)PA_TO_VA(addr);  // 對外回傳 VA
         }
     }
 
@@ -407,7 +408,9 @@ void memory_reserve(unsigned long start, unsigned long size)
 static void reserve_memory_regions_from_fdt(const void *fdt)
 {
     struct fdt_memory_region reserved_regions[32];
-    unsigned long kernel_start = (unsigned long)&__kernel_start;
+    // __kernel_start / __kernel_end 是 VA（linker script 放在 higher-half）
+    // memory_reserve 用 PA 做邊界計算，要先轉換
+    unsigned long kernel_start = VA_TO_PA((unsigned long)&__kernel_start);
     unsigned long kernel_size = (unsigned long)(&__kernel_end - &__kernel_start);
     unsigned long initrd_start = 0;
     unsigned long initrd_end = 0;
@@ -561,7 +564,7 @@ static int pool_grow(int pool_index)
         return -1;
     }
 
-    page_idx = addr_to_frame_idx(&buddy_allocator, page_addr);
+    page_idx = addr_to_frame_idx(&buddy_allocator, VA_TO_PA(page_addr));  // buddy_alloc 回 VA，需轉 PA
     chunk_size = chunk_pools[pool_index].chunk_size;
     chunk_count = PAGE_SIZE / chunk_size;
 
@@ -618,7 +621,7 @@ static int pool_free_chunk(void *ptr)
     struct chunk *chunk;
     struct chunk *cur;
 
-    addr = (unsigned long)ptr;
+    addr = VA_TO_PA((unsigned long)ptr);  // ptr 是 VA，轉 PA 才能和 base_addr 比較
     page_base = addr_to_page_base(addr);
 
     if (page_base < buddy_allocator.base_addr ||
@@ -777,7 +780,7 @@ void * buddy_alloc(unsigned int order)
     //log_page_alloc_event(idx, order);
     //log_free_list_state("allocate");
 
-    return (void *)(buddy_allocator.base_addr + idx * PAGE_SIZE);
+    return (void *)PA_TO_VA(buddy_allocator.base_addr + idx * PAGE_SIZE);  // 回傳 VA
 }
 
 /*
@@ -790,7 +793,7 @@ void * buddy_alloc(unsigned int order)
  */
 void buddy_free(void *ptr)
 {
-    unsigned long addr = (unsigned long)ptr;
+    unsigned long addr = VA_TO_PA((unsigned long)ptr);  // 傳入 VA，轉回 PA 做內部計算
     unsigned long idx;
     unsigned long buddy_idx;
     unsigned long old_idx;

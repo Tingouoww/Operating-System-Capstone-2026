@@ -28,6 +28,13 @@
 #define SATP_SV39           (8UL << 60)
 #define MAKE_SATP(pgd_pa)   (SATP_SV39 | ((unsigned long)(pgd_pa) >> 12))
 
+#define USER_CODE_VA  0x0UL
+#define USER_SIGNAL_STACK_VA 0x0000003fffffd000UL
+#define USER_TRAMPOLINE_VA  0x0000003fffffe000UL
+#define USER_STACK_VA 0x0000003ffffff000UL
+
+extern unsigned long pgd[512];
+
 /* User space prot flags */
 #define PROT_USER_RX  (PTE_V | PTE_R | PTE_X | PTE_U | PTE_A | PTE_D)
 #define PROT_USER_RW  (PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D)
@@ -36,5 +43,16 @@ void setup_vm(void);
 void drop_identity_map(void);
 void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size,
                unsigned long pa, unsigned long prot);
+unsigned long *alloc_user_pgd(void);
+void          free_user_pgd(unsigned long *pgd_va);
+int           copy_user_pages(unsigned long *src_pgd, unsigned long *dst_pgd);
+unsigned long lookup_user_pa(unsigned long *pgd_va, unsigned long va);
+int           copy_from_user_pgd(unsigned long *pgd_va, void *dst,
+                                 const void *src_user, unsigned long len);
+int           copy_to_user_pgd(unsigned long *pgd_va, void *dst_user,
+                               const void *src, unsigned long len);
+int           copy_string_from_user_pgd(unsigned long *pgd_va, char *dst,
+                                        const char *src_user,
+                                        unsigned long max_len);
 
 #endif

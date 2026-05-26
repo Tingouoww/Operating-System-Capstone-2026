@@ -5,52 +5,119 @@
 #ifdef QEMU
 // QEMU DRAM 從 0x80000000 開始
 #define PHY_RAM_BASE 0x80000000UL
-// QEMU MMIO（PLIC=0x0c000000, FW_CFG=0x10100000）在第一個 GiB
-#define PHY_MMIO_BASE 0x00000000UL
+#define QEMU_UART_BASE 0x10000000UL
+#define QEMU_UART_SIZE PAGE_SIZE
+#define QEMU_PLIC_BASE 0x0c000000UL
+#define QEMU_PLIC_SIZE (4UL * 1024 * 1024)
+#define QEMU_FW_CFG_BASE 0x10100000UL
+#define QEMU_FW_CFG_SIZE PAGE_SIZE
 #else
-// Board: RAM 和 MMIO 都在第一個 GiB（0x00000000-0x3FFFFFFF）
 #define PHY_RAM_BASE  0x00000000UL
+#define BOARD_FB_BASE   0x7f700000UL
+#define BOARD_FB_SIZE   (8UL * 1024 * 1024)
+#define BOARD_UART_BASE 0xd4017000UL
+#define BOARD_UART_SIZE PAGE_SIZE
+#define BOARD_PLIC_BASE 0xe0000000UL
+#define BOARD_PLIC_SIZE (4UL * 1024 * 1024)
 #endif
 
 // PGD index = VPN[2] = (va >> 30) & 0x1ff
 #define IDENTITY_PGD_IDX  ((PHY_RAM_BASE >> 30) & 0x1ff)
 #define KERNEL_PGD_IDX    (((PHY_RAM_BASE + PAGE_OFFSET) >> 30) & 0x1ff)
+#define KERNEL_PT_POOL_PAGES 16
 
 unsigned long pgd[512] __attribute__((aligned(4096)));
-static unsigned long pmd[512]     __attribute__((aligned(4096)));  // DRAM region
+unsigned long pmd[512]     __attribute__((aligned(4096)));  // DRAM region
+static unsigned long kernel_pt_pool[KERNEL_PT_POOL_PAGES][512]
+    __attribute__((aligned(4096)));
+static unsigned int kernel_pt_pool_used;
 
+/* 開機前期使用，因為此時記憶體還沒初始化 */
+static unsigned long *kernel_alloc_pt_page(void) {
+    unsigned long *table;
+
+    if (kernel_pt_pool_used >= KERNEL_PT_POOL_PAGES)
+        while (1)
+            ;
+
+    table = kernel_pt_pool[kernel_pt_pool_used++];
+    memset(table, 0, PAGE_SIZE);
+    return table;
+}
+
+static void kernel_pagewalk(unsigned long *root_pgd,
+                            unsigned long va,
+                            unsigned long pa,
+                            unsigned long prot) {
+    unsigned long vpn2 = (va >> 30) & 0x1ff;
+    unsigned long vpn1 = (va >> 21) & 0x1ff;
+    unsigned long vpn0 = (va >> 12) & 0x1ff;
+    unsigned long *pmd_table;
+    unsigned long *pte_table;
+
+    if (!(root_pgd[vpn2] & PTE_V)) {
+        pmd_table = kernel_alloc_pt_page();
+        root_pgd[vpn2] = MAKE_PTE((unsigned long)pmd_table, PTE_V);
+    } else {
+        pmd_table = (unsigned long *)((root_pgd[vpn2] >> 10) << 12);
+    }
+
+    if (!(pmd_table[vpn1] & PTE_V)) {
+        pte_table = kernel_alloc_pt_page();
+        pmd_table[vpn1] = MAKE_PTE((unsigned long)pte_table, PTE_V);
+    } else {
+        pte_table = (unsigned long *)((pmd_table[vpn1] >> 10) << 12);
+    }
+
+    pte_table[vpn0] = MAKE_PTE(pa, prot);
+}
+
+static void kernel_map_pages(unsigned long *root_pgd,
+                             unsigned long va,
+                             unsigned long size,
+                             unsigned long pa,
+                             unsigned long prot) {
+    for (unsigned long offset = 0; offset < size; offset += PAGE_SIZE)
+        kernel_pagewalk(root_pgd, va + offset, pa + offset, prot);
+}
+
+static void map_kernel_io_regions(void) {
 #ifdef QEMU
-// QEMU 需要額外一張 PMD 來 map 低位址 MMIO（PLIC, FW_CFG 等）
-static unsigned long pmd_mmio[512] __attribute__((aligned(4096)));
-#define MMIO_IDENTITY_PGD_IDX  ((PHY_MMIO_BASE >> 30) & 0x1ff)          // 0
-#define MMIO_KERNEL_PGD_IDX    (((PHY_MMIO_BASE + PAGE_OFFSET) >> 30) & 0x1ff) // 256
+    kernel_map_pages(pgd, PAGE_OFFSET + QEMU_UART_BASE,
+                     QEMU_UART_SIZE, QEMU_UART_BASE, PROT_MMIO);
+    kernel_map_pages(pgd, PAGE_OFFSET + QEMU_PLIC_BASE,
+                     QEMU_PLIC_SIZE, QEMU_PLIC_BASE, PROT_MMIO);
+    kernel_map_pages(pgd, PAGE_OFFSET + QEMU_FW_CFG_BASE,
+                     QEMU_FW_CFG_SIZE, QEMU_FW_CFG_BASE, PROT_MMIO);
+#else
+    kernel_map_pages(pgd, PAGE_OFFSET + BOARD_FB_BASE,
+                     BOARD_FB_SIZE, BOARD_FB_BASE, PROT_MMIO);
+    kernel_map_pages(pgd, PAGE_OFFSET + BOARD_UART_BASE,
+                     BOARD_UART_SIZE, BOARD_UART_BASE, PROT_MMIO);
+    kernel_map_pages(pgd, PAGE_OFFSET + BOARD_PLIC_BASE,
+                     BOARD_PLIC_SIZE, BOARD_PLIC_BASE, PROT_MMIO);
 #endif
+}
 
 void setup_vm(void) {
-    // 1. 填 DRAM PMD：512 個 2MiB superpage，共覆蓋 1GiB
+    kernel_pt_pool_used = 0;
+
+    // 填 DRAM PMD：512 個 2MiB superpage，共覆蓋 1GiB
     for (int i = 0; i < 512; i++) {
         pmd[i] = MAKE_PTE(PHY_RAM_BASE + (unsigned long)i * PMD_SIZE,
                           PROT_KERNEL);
     }
 
-    // 2. Identity mapping（DRAM）：VA = PA
+    // Identity mapping（DRAM）：VA = PA
     pgd[IDENTITY_PGD_IDX] = MAKE_PTE((unsigned long)pmd, PTE_V);
 
-    // 3. Higher-half mapping（DRAM）：VA = PA + PAGE_OFFSET
+    // Higher-half mapping（DRAM）：VA = PA + PAGE_OFFSET
     pgd[KERNEL_PGD_IDX] = MAKE_PTE((unsigned long)pmd, PTE_V);
 
-#ifdef QEMU
-    // 4. QEMU 低位址 MMIO（PLIC=0x0c000000, FW_CFG=0x10100000）
-    //    用 PROT_MMIO（無 X bit）map 第一個 GiB
-    for (int i = 0; i < 512; i++) {
-        pmd_mmio[i] = MAKE_PTE(PHY_MMIO_BASE + (unsigned long)i * PMD_SIZE,
-                               PROT_MMIO);
-    }
-    pgd[MMIO_IDENTITY_PGD_IDX] = MAKE_PTE((unsigned long)pmd_mmio, PTE_V);
-    pgd[MMIO_KERNEL_PGD_IDX]   = MAKE_PTE((unsigned long)pmd_mmio, PTE_V);
-#endif
+    // MMIO / framebuffer 用 4KB page table 做 finer-grained、非 executable 映射
+    map_kernel_io_regions();
 
-    // 5. 開 MMU：寫 satp、flush TLB
+    // 開 MMU：寫 satp、flush TLB
     asm volatile(
         "csrw satp, %0\n"
         "sfence.vma zero, zero\n"
@@ -61,10 +128,8 @@ void setup_vm(void) {
 }
 
 void drop_identity_map(void) {
-    pgd[IDENTITY_PGD_IDX] = 0;   // 清掉 DRAM identity
-#ifdef QEMU
-    pgd[MMIO_IDENTITY_PGD_IDX] = 0;  // 清掉 MMIO identity（PGD[0]）
-#endif
+    for (int i = 0; i < 256; i++)
+        pgd[i] = 0;
     asm volatile("sfence.vma zero, zero" ::: "memory");
 }
 
@@ -98,4 +163,142 @@ void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size, un
     for (unsigned long i = 0; i < size; i += PAGE_SIZE) {
         pagewalk(proc_pgd, va + i, pa + i, prot);
     }
+}
+
+unsigned long *alloc_user_pgd(void){
+    unsigned long *new_pgd = (unsigned long *)buddy_alloc(0);
+    if (!new_pgd) return NULL;
+    memset(new_pgd, 0, PAGE_SIZE);
+    for (int i = 256; i < 512; i++)
+        new_pgd[i] = pgd[i];  // 複製 kernel mapping（DRAM + MMIO 高半段）
+    return new_pgd;           
+}
+
+void free_user_pgd(unsigned long *pgd_va){
+    if (!pgd_va) return;
+    for (int i = 0; i < 256; i++) {
+        if (!(pgd_va[i] & PTE_V)) continue;
+        unsigned long *pmd = (unsigned long *)PA_TO_VA((pgd_va[i] >> 10) << 12);
+        for (int j = 0; j < 512; j++) {
+            if (!(pmd[j] & PTE_V)) continue;
+            if (pmd[j] & (PTE_R | PTE_W | PTE_X)) continue; // superpage，跳過
+            unsigned long *pte = (unsigned long *)PA_TO_VA((pmd[j] >> 10) << 12);
+            // 釋放每個 leaf 資料頁（code / stack 頁框）
+            for (int k = 0; k < 512; k++) {
+                if (!(pte[k] & PTE_V)) continue;
+                unsigned long data_pa = (pte[k] >> 10) << 12;
+                buddy_free((void *)PA_TO_VA(data_pa));
+            }
+            buddy_free(pte);  // 釋放 PT 頁本身
+        }
+        buddy_free(pmd);
+    }
+    buddy_free(pgd_va);
+}
+
+int copy_user_pages(unsigned long *src_pgd, unsigned long *dst_pgd){
+    for (int i = 0; i < 256; i++) {
+        if (!(src_pgd[i] & PTE_V)) continue;
+        unsigned long *src_pmd = (unsigned long *)PA_TO_VA((src_pgd[i] >> 10) << 12);
+        for (int j = 0; j < 512; j++) {
+            if (!(src_pmd[j] & PTE_V)) continue;
+            if (src_pmd[j] & (PTE_R | PTE_W | PTE_X)) continue; // superpage，跳過
+            unsigned long *src_pte = (unsigned long *)PA_TO_VA((src_pmd[j] >> 10) << 12);
+            for (int k = 0; k < 512; k++) {
+                if (!(src_pte[k] & PTE_V)) continue;
+                unsigned long src_pa = (src_pte[k] >> 10) << 12;
+                unsigned long prot   = src_pte[k] & 0x3FF;
+                unsigned long *new_frame = (unsigned long *)buddy_alloc(0);
+                if (!new_frame) return -1;
+                mem_cpy(new_frame, (void *)PA_TO_VA(src_pa), PAGE_SIZE);
+                unsigned long va = ((unsigned long)i << 30) |
+                                   ((unsigned long)j << 21) |
+                                   ((unsigned long)k << 12);
+                pagewalk(dst_pgd, va, VA_TO_PA((unsigned long)new_frame), prot);
+            }
+        }
+    }
+    return 0;
+}
+
+unsigned long lookup_user_pa(unsigned long *pgd_va, unsigned long va){
+    unsigned long vpn2 = (va >> 30) & 0x1ff;
+    unsigned long vpn1 = (va >> 21) & 0x1ff;
+    unsigned long vpn0 = (va >> 12) & 0x1ff;
+    if (!(pgd_va[vpn2] & PTE_V)) return 0;
+    unsigned long *pmd = (unsigned long *)PA_TO_VA((pgd_va[vpn2] >> 10) << 12);
+    if (!(pmd[vpn1] & PTE_V)) return 0;
+    unsigned long *pte = (unsigned long *)PA_TO_VA((pmd[vpn1] >> 10) << 12);
+    if (!(pte[vpn0] & PTE_V)) return 0;
+    return (pte[vpn0] >> 10) << 12;
+}
+
+int copy_from_user_pgd(unsigned long *pgd_va, void *dst,
+                       const void *src_user, unsigned long len){
+    unsigned char *dst_bytes = (unsigned char *)dst;
+    unsigned long src_va = (unsigned long)src_user;
+
+    if (!pgd_va) return -1;
+
+    while (len > 0) {
+        unsigned long src_pa = lookup_user_pa(pgd_va, src_va);
+        unsigned long page_off;
+        unsigned long chunk;
+
+        if (!src_pa) return -1;
+
+        page_off = src_va & (PAGE_SIZE - 1);
+        chunk = PAGE_SIZE - page_off;
+        if (chunk > len) chunk = len;
+
+        mem_cpy(dst_bytes, (const void *)(PA_TO_VA(src_pa) + page_off), chunk);
+        dst_bytes += chunk;
+        src_va += chunk;
+        len -= chunk;
+    }
+    return 0;
+}
+
+int copy_to_user_pgd(unsigned long *pgd_va, void *dst_user,
+                     const void *src, unsigned long len){
+    const unsigned char *src_bytes = (const unsigned char *)src;
+    unsigned long dst_va = (unsigned long)dst_user;
+
+    if (!pgd_va) return -1;
+
+    while (len > 0) {
+        unsigned long dst_pa = lookup_user_pa(pgd_va, dst_va);
+        unsigned long page_off;
+        unsigned long chunk;
+
+        if (!dst_pa) return -1;
+
+        page_off = dst_va & (PAGE_SIZE - 1);
+        chunk = PAGE_SIZE - page_off;
+        if (chunk > len) chunk = len;
+
+        mem_cpy((void *)(PA_TO_VA(dst_pa) + page_off), src_bytes, chunk);
+        src_bytes += chunk;
+        dst_va += chunk;
+        len -= chunk;
+    }
+    return 0;
+}
+
+int copy_string_from_user_pgd(unsigned long *pgd_va, char *dst,
+                              const char *src_user, unsigned long max_len){
+    unsigned long i;
+
+    if (!pgd_va || !dst || !src_user || max_len == 0)
+        return -1;
+
+    for (i = 0; i < max_len; i++) {
+        if (copy_from_user_pgd(pgd_va, &dst[i], src_user + i, 1) < 0)
+            return -1;
+        if (dst[i] == '\0')
+            return 0;
+    }
+
+    dst[max_len - 1] = '\0';
+    return -1;
 }
