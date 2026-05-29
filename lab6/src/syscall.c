@@ -73,16 +73,16 @@ long sys_uart_write(const char *buf, long count){
 
 int sys_exec(struct pt_regs *regs, const char *path){
     struct task_struct *cur = get_current();
-    char kpath[USER_PATH_MAX];
+    char kpath[USER_PATH_MAX]; // kernel buffer, kernel stack 上開的空間, 1 byte 1 byte
     unsigned long code_va;
     unsigned long code_size;
 
     if (!cur->pgd)
         return -1;
-    if (copy_string_from_user_pgd(cur->pgd, kpath, path, sizeof(kpath)) < 0)
+    if (copy_string_from_user_pgd(cur->pgd, kpath, path, sizeof(kpath)) < 0) // path（user VA）指向的字串，一個 byte 一個 byte 讀出來，寫進 kernel stack 上的 kpath
         return -1;
 
-    code_va   = cpio_find_exec(kpath);
+    code_va   = cpio_find_exec(kpath); // kernel 可取的 VA
     code_size = cpio_find_exec_size(kpath);
     if (!code_va || !code_size) return -1;
 
@@ -120,6 +120,7 @@ int sys_exec(struct pt_regs *regs, const char *path){
     cur->user_stack = new_ustack;
     cur->user_entry = USER_CODE_VA;
     cur->user_sp    = USER_STACK_VA + PAGE_SIZE;
+    memset(cur->vmas, 0, sizeof(cur->vmas));
     memset(cur->signal_handler, 0, sizeof(cur->signal_handler));
     cur->signal_pending = 0;
     cur->in_signal = 0;
@@ -191,6 +192,7 @@ long sys_fork(struct pt_regs *regs){
     // child 繼承 parent 的 signal handlers
     for (int i = 0; i < MAX_SIGNALS; i++)
         child->signal_handler[i] = cur->signal_handler[i];
+    mem_cpy(child->vmas, cur->vmas, sizeof(cur->vmas));
     child->pid        = nr_threads++;
     child->state      = READY_THREAD;
     child->stack      = ckernel;

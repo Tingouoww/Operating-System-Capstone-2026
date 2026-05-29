@@ -5,6 +5,7 @@
 #ifdef QEMU
 // QEMU DRAM 從 0x80000000 開始
 #define PHY_RAM_BASE 0x80000000UL
+#define DRAM_MAP_SIZE 0x40000000UL
 #define QEMU_UART_BASE 0x10000000UL
 #define QEMU_UART_SIZE PAGE_SIZE
 #define QEMU_PLIC_BASE 0x0c000000UL
@@ -13,6 +14,7 @@
 #define QEMU_FW_CFG_SIZE PAGE_SIZE
 #else
 #define PHY_RAM_BASE  0x00000000UL
+#define DRAM_MAP_SIZE 0x80000000UL
 #define BOARD_FB_BASE   0x7f700000UL
 #define BOARD_FB_SIZE   (8UL * 1024 * 1024)
 #define BOARD_UART_BASE 0xd4017000UL
@@ -24,10 +26,12 @@
 // PGD index = VPN[2] = (va >> 30) & 0x1ff
 #define IDENTITY_PGD_IDX  ((PHY_RAM_BASE >> 30) & 0x1ff)
 #define KERNEL_PGD_IDX    (((PHY_RAM_BASE + PAGE_OFFSET) >> 30) & 0x1ff)
+#define DRAM_PMD_COUNT    (DRAM_MAP_SIZE / PGD_SIZE)
 #define KERNEL_PT_POOL_PAGES 16
 
-unsigned long pgd[512] __attribute__((aligned(4096)));
-unsigned long pmd[512]     __attribute__((aligned(4096)));  // DRAM region
+unsigned long pgd[512] __attribute__((aligned(4096))); // 全域 root page table
+static unsigned long dram_pmd[DRAM_PMD_COUNT][512]
+    __attribute__((aligned(4096)));
 static unsigned long kernel_pt_pool[KERNEL_PT_POOL_PAGES][512]
     __attribute__((aligned(4096)));
 static unsigned int kernel_pt_pool_used;
@@ -49,11 +53,11 @@ static void kernel_pagewalk(unsigned long *root_pgd,
                             unsigned long va,
                             unsigned long pa,
                             unsigned long prot) {
-    unsigned long vpn2 = (va >> 30) & 0x1ff;
-    unsigned long vpn1 = (va >> 21) & 0x1ff;
-    unsigned long vpn0 = (va >> 12) & 0x1ff;
-    unsigned long *pmd_table;
-    unsigned long *pte_table;
+    unsigned long vpn2 = (va >> 30) & 0x1ff; // pgd index
+    unsigned long vpn1 = (va >> 21) & 0x1ff; // pmd index
+    unsigned long vpn0 = (va >> 12) & 0x1ff; // pte index
+    unsigned long *pmd_table; // pmd table address
+    unsigned long *pte_table; // pte table address
 
     if (!(root_pgd[vpn2] & PTE_V)) {
         pmd_table = kernel_alloc_pt_page();
@@ -90,8 +94,6 @@ static void map_kernel_io_regions(void) {
     kernel_map_pages(pgd, PAGE_OFFSET + QEMU_FW_CFG_BASE,
                      QEMU_FW_CFG_SIZE, QEMU_FW_CFG_BASE, PROT_MMIO);
 #else
-    kernel_map_pages(pgd, PAGE_OFFSET + BOARD_FB_BASE,
-                     BOARD_FB_SIZE, BOARD_FB_BASE, PROT_MMIO);
     kernel_map_pages(pgd, PAGE_OFFSET + BOARD_UART_BASE,
                      BOARD_UART_SIZE, BOARD_UART_BASE, PROT_MMIO);
     kernel_map_pages(pgd, PAGE_OFFSET + BOARD_PLIC_BASE,
@@ -102,17 +104,21 @@ static void map_kernel_io_regions(void) {
 void setup_vm(void) {
     kernel_pt_pool_used = 0;
 
-    // 填 DRAM PMD：512 個 2MiB superpage，共覆蓋 1GiB
-    for (int i = 0; i < 512; i++) {
-        pmd[i] = MAKE_PTE(PHY_RAM_BASE + (unsigned long)i * PMD_SIZE,
-                          PROT_KERNEL);
+    for (unsigned long g = 0; g < DRAM_PMD_COUNT; g++) {
+        unsigned long base = PHY_RAM_BASE + g * PGD_SIZE;
+
+        // 每個 PMD 表負責 1GiB DRAM，內含 512 個 2MiB superpage。
+        for (int i = 0; i < 512; i++) {
+            dram_pmd[g][i] = MAKE_PTE(base + (unsigned long)i * PMD_SIZE,
+                                      PROT_KERNEL);
+        }
+
+        // Identity mapping（DRAM）：VA = PA
+        pgd[IDENTITY_PGD_IDX + g] = MAKE_PTE((unsigned long)dram_pmd[g], PTE_V);
+
+        // Higher-half mapping（DRAM）：VA = PA + PAGE_OFFSET
+        pgd[KERNEL_PGD_IDX + g] = MAKE_PTE((unsigned long)dram_pmd[g], PTE_V);
     }
-
-    // Identity mapping（DRAM）：VA = PA
-    pgd[IDENTITY_PGD_IDX] = MAKE_PTE((unsigned long)pmd, PTE_V);
-
-    // Higher-half mapping（DRAM）：VA = PA + PAGE_OFFSET
-    pgd[KERNEL_PGD_IDX] = MAKE_PTE((unsigned long)pmd, PTE_V);
 
     // MMIO / framebuffer 用 4KB page table 做 finer-grained、非 executable 映射
     map_kernel_io_regions();
@@ -120,7 +126,7 @@ void setup_vm(void) {
     // 開 MMU：寫 satp、flush TLB
     asm volatile(
         "csrw satp, %0\n"
-        "sfence.vma zero, zero\n"
+        "sfence.vma zero, zero\n" // 同步虛擬記憶體轉換狀態的指令
         :
         : "r"(MAKE_SATP((unsigned long)pgd))
         : "memory"
@@ -141,7 +147,7 @@ static void pagewalk(unsigned long *proc_pgd, unsigned long va, unsigned long pa
     unsigned long *pte_table;
 
     if (!(proc_pgd[vpn2] & PTE_V)) {
-        pmd_table = buddy_alloc(0);
+        pmd_table = buddy_alloc(0); // VA
         if (!pmd_table) return;
         memset(pmd_table, 0, PAGE_SIZE);
         proc_pgd[vpn2] = MAKE_PTE(VA_TO_PA((unsigned long)pmd_table), PTE_V);
@@ -161,10 +167,46 @@ static void pagewalk(unsigned long *proc_pgd, unsigned long va, unsigned long pa
     pte_table[vpn0] = MAKE_PTE(pa, prot);
 }
 
+static unsigned long *find_user_pte(unsigned long *pgd_va, unsigned long va) {
+    unsigned long vpn2 = (va >> 30) & 0x1ff;
+    unsigned long vpn1 = (va >> 21) & 0x1ff;
+    unsigned long vpn0 = (va >> 12) & 0x1ff;
+    unsigned long *pmd;
+    unsigned long *pte;
+
+    if (!pgd_va || !(pgd_va[vpn2] & PTE_V))
+        return NULL;
+
+    pmd = (unsigned long *)PA_TO_VA((pgd_va[vpn2] >> 10) << 12);
+    if (!(pmd[vpn1] & PTE_V) || (pmd[vpn1] & (PTE_R | PTE_W | PTE_X)))
+        return NULL;
+
+    pte = (unsigned long *)PA_TO_VA((pmd[vpn1] >> 10) << 12);
+    return &pte[vpn0];
+}
+
+/* 建立 VA -> PA 的映射關係 */
 void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size, unsigned long pa, unsigned long prot){
     for (unsigned long i = 0; i < size; i += PAGE_SIZE) {
         pagewalk(proc_pgd, va + i, pa + i, prot);
     }
+}
+
+void unmap_user_pages(unsigned long *pgd_va, unsigned long va,
+                      unsigned long size, int free_frames){
+    for (unsigned long offset = 0; offset < size; offset += PAGE_SIZE) {
+        unsigned long *pte = find_user_pte(pgd_va, va + offset);
+        unsigned long data_pa;
+
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+            continue;
+
+        data_pa = (*pte >> 10) << 12;
+        *pte = 0;
+        if (free_frames)
+            buddy_free((void *)PA_TO_VA(data_pa));
+    }
+    asm volatile("sfence.vma zero, zero" ::: "memory");
 }
 
 unsigned long *alloc_user_pgd(void){
@@ -223,6 +265,7 @@ int copy_user_pages(unsigned long *src_pgd, unsigned long *dst_pgd){
     return 0;
 }
 
+/* 把某個 user virtual address 查成 physical address */
 unsigned long lookup_user_pa(unsigned long *pgd_va, unsigned long va){
     unsigned long vpn2 = (va >> 30) & 0x1ff;
     unsigned long vpn1 = (va >> 21) & 0x1ff;
@@ -237,6 +280,7 @@ unsigned long lookup_user_pa(unsigned long *pgd_va, unsigned long va){
     return (pte[vpn0] >> 10) << 12;
 }
 
+/* 從 user space 複製一段原始資料到 kernel buffer */
 int copy_from_user_pgd(unsigned long *pgd_va, void *dst,
                        const void *src_user, unsigned long len){
     unsigned char *dst_bytes = (unsigned char *)dst;
@@ -289,6 +333,7 @@ int copy_to_user_pgd(unsigned long *pgd_va, void *dst_user,
     return 0;
 }
 
+/* 把使用者程式提供的字串指標安全地複製到 kernel 的 buffer */
 int copy_string_from_user_pgd(unsigned long *pgd_va, char *dst,
                               const char *src_user, unsigned long max_len){
     unsigned long i;
@@ -297,6 +342,7 @@ int copy_string_from_user_pgd(unsigned long *pgd_va, char *dst,
         return -1;
 
     for (i = 0; i < max_len; i++) {
+        // 從 src_user 開始，一次複製 1 個 byte 到 dst[i]
         if (copy_from_user_pgd(pgd_va, &dst[i], src_user + i, 1) < 0)
             return -1;
         if (dst[i] == '\0')

@@ -12,8 +12,19 @@
 #define WAITING_THREAD 3
 #define SLEEPING_THREAD 4
 
+#define MAX_MMAP_AREAS 16
+
 extern int nr_threads; // Thread Counter
 extern struct task_struct* run_queue;
+
+struct vma{ // virtual memory area
+    unsigned long start;
+    unsigned long end;
+
+    int prot; // READ, WRITE, EXEC
+    int flags; // ANONYMOUS, POPULATE
+    int used;
+};
 
 struct task_struct {
     struct thread_struct {
@@ -39,6 +50,9 @@ struct task_struct {
     unsigned long signal_pending;
     int in_signal; // 是否在執行 signal handler
     struct saved_signal_context signal_context;
+
+    // mmap
+    struct vma vmas[MAX_MMAP_AREAS];
 };
 
 typedef void (*task_callback_t)(void *arg);

@@ -28,6 +28,7 @@ struct task_struct* get_current() {
 
 extern void switch_to(struct task_struct* prev, struct task_struct* next);
 
+/* 切換記憶體位址空間 */
 static void switch_mm(struct task_struct *next) {
     unsigned long pgd_pa;
     if (next->pgd) {
@@ -255,7 +256,7 @@ int user_exec(const char *filename) {
         return -1;
     }
 
-    // 把程式碼逐頁複製到新分配的頁框（CPIO 資料不保證 4KB 對齊）
+    // 把程式碼逐頁複製到新分配的頁框
     for (unsigned long offset = 0; offset < code_size; offset += PAGE_SIZE) {
         unsigned long page = (unsigned long)buddy_alloc(0);
         if (!page) {

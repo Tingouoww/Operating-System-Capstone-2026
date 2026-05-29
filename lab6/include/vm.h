@@ -43,6 +43,8 @@ void setup_vm(void);
 void drop_identity_map(void);
 void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size,
                unsigned long pa, unsigned long prot);
+void unmap_user_pages(unsigned long *pgd_va, unsigned long va,
+                      unsigned long size, int free_frames);
 unsigned long *alloc_user_pgd(void);
 void          free_user_pgd(unsigned long *pgd_va);
 int           copy_user_pages(unsigned long *src_pgd, unsigned long *dst_pgd);

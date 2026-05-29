@@ -12,6 +12,18 @@ static inline uint32_t bswap32(uint32_t x)
            ((x & 0xff000000U) >> 24);
 }
 
+static inline uint64_t bswap64(uint64_t x)
+{
+    return ((x & 0x00000000000000ffULL) << 56) |
+           ((x & 0x000000000000ff00ULL) << 40) |
+           ((x & 0x0000000000ff0000ULL) << 24) |
+           ((x & 0x00000000ff000000ULL) << 8) |
+           ((x & 0x000000ff00000000ULL) >> 8) |
+           ((x & 0x0000ff0000000000ULL) >> 24) |
+           ((x & 0x00ff000000000000ULL) >> 40) |
+           ((x & 0xff00000000000000ULL) >> 56);
+}
+
 static inline const void *align_up(const void *ptr, size_t align)
 { /* 位元對齊 */
     return (const void *)(((uintptr_t)ptr + align - 1) & ~(align - 1));
@@ -507,6 +519,56 @@ int fdt_get_memory_range(const void *fdt, unsigned long *base, unsigned long *si
     if (*size == 0)
         return -1;
     return 0;
+}
+
+int fdt_get_mem_rsv_regions(const void *fdt,
+                            struct fdt_memory_region *regions,
+                            int max_regions)
+{
+    const struct fdt_header *header = (const struct fdt_header *)fdt;
+    const unsigned char *entry_ptr;
+    const unsigned char *entry_end;
+    unsigned long total_size;
+    int count = 0;
+
+    if (!fdt || !regions || max_regions <= 0)
+        return -1;
+
+    if (bswap32(header->magic) != 0xd00dfeed)
+        return -1;
+
+    total_size = (unsigned long)bswap32(header->totalsize);
+    entry_ptr = (const unsigned char *)fdt + bswap32(header->off_mem_rsvmap);
+    entry_end = (const unsigned char *)fdt + total_size;
+
+    while (entry_ptr + 2 * sizeof(uint64_t) <= entry_end)
+    {
+        uint64_t addr_be;
+        uint64_t size_be;
+        unsigned long addr;
+        unsigned long size;
+
+        mem_cpy(&addr_be, entry_ptr, sizeof(addr_be));
+        mem_cpy(&size_be, entry_ptr + sizeof(uint64_t), sizeof(size_be));
+        entry_ptr += 2 * sizeof(uint64_t);
+
+        addr = (unsigned long)bswap64(addr_be);
+        size = (unsigned long)bswap64(size_be);
+        if (addr == 0 && size == 0)
+            break;
+
+        if (size == 0)
+            continue;
+
+        if (count >= max_regions)
+            break;
+
+        regions[count].start = addr;
+        regions[count].size = size;
+        count++;
+    }
+
+    return count;
 }
 
 int fdt_get_reserved_memory_regions(const void *fdt,

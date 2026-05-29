@@ -37,6 +37,9 @@ unsigned long fdt_get_initrd_start_or_default(const void *fdt,
 
 int fdt_get_memory_range(const void *fdt, unsigned long *base, unsigned long *size);
 int fdt_get_initrd_range(const void *fdt, unsigned long *start, unsigned long *end);
+int fdt_get_mem_rsv_regions(const void *fdt,
+                            struct fdt_memory_region *regions,
+                            int max_regions);
 int fdt_get_reserved_memory_regions(const void *fdt,
                                     struct fdt_memory_region *regions,
                                     int max_regions);

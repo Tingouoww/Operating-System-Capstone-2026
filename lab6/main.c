@@ -11,6 +11,7 @@
 #include "pt_regs.h"
 #include "syscall.h"
 #include "video.h"
+#include "mmap.h"
 
 static void shell_thread(void) {
     char buf[128];
@@ -74,6 +75,8 @@ void do_trap(struct pt_regs *regs) {
             case 10: regs->a0 = sys_signal((int)regs->a0, (void (*)(int))regs->a1); break;
             case 11: sys_sigreturn(regs); break;
             case 12: regs->a0 = sys_kill((int)regs->a0, (int)regs->a1); break;
+            case 13: regs->a0 = sys_mmap((unsigned long)regs->a0, (unsigned long)regs->a1,
+                                (int)regs->a2, (int)regs->a3); break;
             default: regs->a0 = -1; break;
         }
 

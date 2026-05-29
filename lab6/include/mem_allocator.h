@@ -3,7 +3,9 @@
 
 #include "list.h"
 
+#ifndef PAGE_SIZE
 #define PAGE_SIZE 4096UL
+#endif
 #define MAX_ORDER 10
 #define BUDDY_MAX_MANAGED_SIZE 0x80000000UL
 #define BUDDY_MAX_PAGES (BUDDY_MAX_MANAGED_SIZE / PAGE_SIZE)

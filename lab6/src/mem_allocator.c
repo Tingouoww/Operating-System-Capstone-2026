@@ -407,6 +407,7 @@ void memory_reserve(unsigned long start, unsigned long size)
 
 static void reserve_memory_regions_from_fdt(const void *fdt)
 {
+    struct fdt_memory_region mem_rsv_regions[16];
     struct fdt_memory_region reserved_regions[32];
     // __kernel_start / __kernel_end 是 VA（linker script 放在 higher-half）
     // memory_reserve 用 PA 做邊界計算，要先轉換
@@ -414,10 +415,11 @@ static void reserve_memory_regions_from_fdt(const void *fdt)
     unsigned long kernel_size = (unsigned long)(&__kernel_end - &__kernel_start);
     unsigned long initrd_start = 0;
     unsigned long initrd_end = 0;
+    int mem_rsv_count;
     int region_count;
     int i;
 
-    /* 四類保留來源：kernel image、dtb blob、initramfs、reserved-memory */
+    /* 五類保留來源：kernel image、dtb blob、initramfs、memreserve、reserved-memory */
     //log_memory_region("kernel", kernel_start, kernel_size);
     memory_reserve(kernel_start, kernel_size);
 
@@ -433,6 +435,18 @@ static void reserve_memory_regions_from_fdt(const void *fdt)
     else
     {
         //log_memory_region("initrd", 0, 0);
+    }
+
+    mem_rsv_count = fdt_get_mem_rsv_regions(fdt,
+                                            mem_rsv_regions,
+                                            (int)(sizeof(mem_rsv_regions) /
+                                                  sizeof(mem_rsv_regions[0])));
+    if (mem_rsv_count > 0)
+    {
+        for (i = 0; i < mem_rsv_count; i++)
+        {
+            memory_reserve(mem_rsv_regions[i].start, mem_rsv_regions[i].size);
+        }
     }
 
     region_count = fdt_get_reserved_memory_regions(fdt,
