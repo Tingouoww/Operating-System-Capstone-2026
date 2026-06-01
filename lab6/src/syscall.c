@@ -7,6 +7,7 @@
 #include "timer.h"
 #include "video.h"
 #include "vm.h"
+#include "mmap.h"
 
 #define USER_PATH_MAX 256
 
@@ -86,41 +87,23 @@ int sys_exec(struct pt_regs *regs, const char *path){
     code_size = cpio_find_exec_size(kpath);
     if (!code_va || !code_size) return -1;
 
-    unsigned long new_ustack = (unsigned long)buddy_alloc(0);
     unsigned long *new_pgd   = alloc_user_pgd();
-    if (!new_ustack || !new_pgd) {
-        if (new_ustack) buddy_free((void *)new_ustack);
+    if (!new_pgd) {
         if (new_pgd)    free_user_pgd(new_pgd);
-        return -1;
-    }
-
-    // 逐頁複製 code 到新 buddy 頁（避免 CPIO 非 4KB 對齊問題）
-    for (unsigned long offset = 0; offset < code_size; offset += PAGE_SIZE) {
-        unsigned long page = (unsigned long)buddy_alloc(0);
-        if (!page) {
-            free_user_pgd(new_pgd);   // 釋放已 map 的頁面
-            buddy_free((void *)new_ustack);
-            return -1;
-        }
-        unsigned long copy_bytes = code_size - offset;
-        if (copy_bytes > PAGE_SIZE) copy_bytes = PAGE_SIZE;
-        memset((void *)page, 0, PAGE_SIZE);
-        mem_cpy((void *)page, (void *)(code_va + offset), copy_bytes);
-        map_pages(new_pgd, USER_CODE_VA + offset, PAGE_SIZE, VA_TO_PA(page), PROT_USER_RX);
-    }
-    map_pages(new_pgd, USER_STACK_VA, PAGE_SIZE, VA_TO_PA(new_ustack), PROT_USER_RW);
-    if (signal_setup_user_pages(new_pgd) < 0) {
-        free_user_pgd(new_pgd);
         return -1;
     }
 
     // 先切到新頁表再釋放舊的，確保 kernel 在切換過程中有效
     unsigned long *old_pgd = cur->pgd;
-    cur->pgd        = new_pgd;
-    cur->user_stack = new_ustack;
+    cur->pgd = new_pgd;
+    if (setup_user_exec_vmas(cur, code_va, code_size) < 0) {
+        cur->pgd = old_pgd;
+        free_user_pgd(new_pgd);
+        return -1;
+    }
+    cur->user_stack = USER_STACK_VA;
     cur->user_entry = USER_CODE_VA;
     cur->user_sp    = USER_STACK_VA + PAGE_SIZE;
-    memset(cur->vmas, 0, sizeof(cur->vmas));
     memset(cur->signal_handler, 0, sizeof(cur->signal_handler));
     cur->signal_pending = 0;
     cur->in_signal = 0;
@@ -168,7 +151,7 @@ long sys_fork(struct pt_regs *regs){
         return -1;
     }
 
-    // 從 child_pgd 查出 child user stack 的物理頁 VA
+    // 從 child_pgd 查出 child user stack 的物理頁，確認 stack leaf 已存在
     unsigned long child_ustack_pa = lookup_user_pa(child_pgd, USER_STACK_VA);
     if (!child_ustack_pa) {
         buddy_free((void *)ckernel);
@@ -176,7 +159,6 @@ long sys_fork(struct pt_regs *regs){
         free(child);
         return -1;
     }
-    unsigned long child_ustack_va = PA_TO_VA(child_ustack_pa);
 
     // 在 child kernel stack 上建立 trap frame
     unsigned long child_ksp = ckernel + PAGE_SIZE;
@@ -197,7 +179,7 @@ long sys_fork(struct pt_regs *regs){
     child->state      = READY_THREAD;
     child->stack      = ckernel;
     child->kernel_sp  = child_ksp;
-    child->user_stack = child_ustack_va;  // VA，供 free_user_pgd 追蹤
+    child->user_stack = USER_STACK_VA;
     child->user_sp    = USER_STACK_VA + PAGE_SIZE;
     child->user_entry = cur->user_entry;
     child->pgd        = child_pgd;

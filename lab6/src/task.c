@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "cpio.h"
 #include "vm.h"
+#include "mmap.h"
 
 #define MAX_TASKS 64
 
@@ -245,36 +246,12 @@ int user_exec(const char *filename) {
     unsigned long code_size = cpio_find_exec_size(filename);
     if(!code_va || !code_size) return -1;
 
-    // 分配 kernel stack 和 user stack
+    // 只配置 kernel stack 與 PGD，user pages 由 fault handler 按需補齊
     unsigned long kstack = (unsigned long)buddy_alloc(0);
-    unsigned long ustack = (unsigned long)buddy_alloc(0);
     unsigned long *proc_pgd = alloc_user_pgd();
-    if(!kstack || !ustack || !proc_pgd) {
+    if(!kstack || !proc_pgd) {
         if (kstack)   buddy_free((void *)kstack);
-        if (ustack)   buddy_free((void *)ustack);
         if (proc_pgd) free_user_pgd(proc_pgd);
-        return -1;
-    }
-
-    // 把程式碼逐頁複製到新分配的頁框
-    for (unsigned long offset = 0; offset < code_size; offset += PAGE_SIZE) {
-        unsigned long page = (unsigned long)buddy_alloc(0);
-        if (!page) {
-            buddy_free((void *)kstack);
-            buddy_free((void *)ustack);
-            free_user_pgd(proc_pgd);
-            return -1;
-        }
-        unsigned long copy_bytes = code_size - offset;
-        if (copy_bytes > PAGE_SIZE) copy_bytes = PAGE_SIZE;
-        memset((void *)page, 0, PAGE_SIZE);
-        mem_cpy((void *)page, (void *)(code_va + offset), copy_bytes);
-        map_pages(proc_pgd, USER_CODE_VA + offset, PAGE_SIZE, VA_TO_PA(page), PROT_USER_RX);
-    }
-    map_pages(proc_pgd, USER_STACK_VA, PAGE_SIZE, VA_TO_PA(ustack), PROT_USER_RW);
-    if (signal_setup_user_pages(proc_pgd) < 0) {
-        buddy_free((void *)kstack);
-        free_user_pgd(proc_pgd);
         return -1;
     }
 
@@ -293,16 +270,21 @@ int user_exec(const char *filename) {
     struct task_struct *t = allocate(sizeof(*t));
     if (!t) {
         buddy_free((void *)kstack);
-        /* ustack 已經 map 進 proc_pgd，由 free_user_pgd 統一釋放，不可再 buddy_free */
         free_user_pgd(proc_pgd);
         return -1;
     }
     memset(t, 0, sizeof(*t));
+    if (setup_user_exec_vmas(t, code_va, code_size) < 0) {
+        buddy_free((void *)kstack);
+        free_user_pgd(proc_pgd);
+        free(t);
+        return -1;
+    }
     t->pid         = nr_threads++;
     t->state       = READY_THREAD;
     t->stack       = kstack;
     t->kernel_sp   = kernel_sp;
-    t->user_stack  = ustack;
+    t->user_stack  = USER_STACK_VA;
     t->user_sp     = USER_STACK_VA + PAGE_SIZE;
     t->user_entry  = USER_CODE_VA;
     t->pgd         = proc_pgd;

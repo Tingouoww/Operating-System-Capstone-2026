@@ -19,6 +19,13 @@
 #define MAP_POPULATE 0x8000
 
 long  sys_mmap(unsigned long addr, unsigned long length, int prot, int flags);
+struct vma *find_vma(struct task_struct *t, unsigned long addr);
+unsigned long vma_pte_flags(const struct vma *v);
+int setup_user_exec_vmas(struct task_struct *t,
+                         unsigned long code_src,
+                         unsigned long code_size);
+int populate_vma_page(struct task_struct *t, struct vma *v,
+                      unsigned long fault_addr);
 
 
 #endif

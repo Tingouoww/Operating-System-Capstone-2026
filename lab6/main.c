@@ -40,6 +40,9 @@ static void shell_thread(void) {
 #define SCAUSE_SUPERVISOR_TIMER 5
 #define SCAUSE_ECALL_U 8
 #define SCAUSE_SUPERVISOR_EXT   9
+#define SCAUSE_INST_PAGE_FAULT  12
+#define SCAUSE_LOAD_PAGE_FAULT  13
+#define SCAUSE_STORE_PAGE_FAULT 15
 
 void do_trap(struct pt_regs *regs) {
     if (regs->scause & SCAUSE_IRQ_FLAG) {
@@ -85,6 +88,13 @@ void do_trap(struct pt_regs *regs) {
         // syscall 結束後關中斷（do_trap 返回前），維持一致性
         asm volatile("csrci sstatus, 0x2");
     } 
+    else if(regs->scause == SCAUSE_INST_PAGE_FAULT || regs->scause == SCAUSE_LOAD_PAGE_FAULT || regs->scause == SCAUSE_STORE_PAGE_FAULT){
+        int fault_state = handle_user_page_fault(regs);
+        if(fault_state < 0){
+            uart_puts("[Segmentation fault]: Kill Process\n");
+            sys_exit(-1);
+        }
+    }
     else {
         uart_puts("=== S-Mode trap ===\n");
         uart_puts("scause: "); uart_dec(regs->scause); uart_puts("\n");

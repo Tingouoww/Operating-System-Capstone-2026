@@ -1,6 +1,8 @@
 #include "vm.h"
 #include "mem_allocator.h"
 #include "utils.h"
+#include "mmap.h"
+#include "uart.h"
 
 #ifdef QEMU
 // QEMU DRAM 從 0x80000000 開始
@@ -28,6 +30,9 @@
 #define KERNEL_PGD_IDX    (((PHY_RAM_BASE + PAGE_OFFSET) >> 30) & 0x1ff)
 #define DRAM_PMD_COUNT    (DRAM_MAP_SIZE / PGD_SIZE)
 #define KERNEL_PT_POOL_PAGES 16
+
+#define PAGE_ALIGN_DOWN(addr) \
+    ((addr) & ~(PAGE_SIZE - 1))
 
 unsigned long pgd[512] __attribute__((aligned(4096))); // 全域 root page table
 static unsigned long dram_pmd[DRAM_PMD_COUNT][512]
@@ -167,7 +172,7 @@ static void pagewalk(unsigned long *proc_pgd, unsigned long va, unsigned long pa
     pte_table[vpn0] = MAKE_PTE(pa, prot);
 }
 
-static unsigned long *find_user_pte(unsigned long *pgd_va, unsigned long va) {
+unsigned long *walk_user_pte(unsigned long *pgd_va, unsigned long va) {
     unsigned long vpn2 = (va >> 30) & 0x1ff;
     unsigned long vpn1 = (va >> 21) & 0x1ff;
     unsigned long vpn0 = (va >> 12) & 0x1ff;
@@ -185,6 +190,16 @@ static unsigned long *find_user_pte(unsigned long *pgd_va, unsigned long va) {
     return &pte[vpn0];
 }
 
+int map_one_page(unsigned long *pgd_va, unsigned long va,
+                 unsigned long pa, unsigned long prot) {
+    pagewalk(pgd_va, va, pa, prot);
+
+    if (lookup_user_pa(pgd_va, va) != pa)
+        return -1;
+
+    return 0;
+}
+
 /* 建立 VA -> PA 的映射關係 */
 void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size, unsigned long pa, unsigned long prot){
     for (unsigned long i = 0; i < size; i += PAGE_SIZE) {
@@ -195,7 +210,7 @@ void map_pages(unsigned long *proc_pgd, unsigned long va, unsigned long size, un
 void unmap_user_pages(unsigned long *pgd_va, unsigned long va,
                       unsigned long size, int free_frames){
     for (unsigned long offset = 0; offset < size; offset += PAGE_SIZE) {
-        unsigned long *pte = find_user_pte(pgd_va, va + offset);
+        unsigned long *pte = walk_user_pte(pgd_va, va + offset);
         unsigned long data_pa;
 
         if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
@@ -285,6 +300,7 @@ int copy_from_user_pgd(unsigned long *pgd_va, void *dst,
                        const void *src_user, unsigned long len){
     unsigned char *dst_bytes = (unsigned char *)dst;
     unsigned long src_va = (unsigned long)src_user;
+    struct task_struct *cur = get_current();
 
     if (!pgd_va) return -1;
 
@@ -293,6 +309,12 @@ int copy_from_user_pgd(unsigned long *pgd_va, void *dst,
         unsigned long page_off;
         unsigned long chunk;
 
+        if (!src_pa && cur && cur->pgd == pgd_va) {
+            struct vma *v = find_vma(cur, src_va);
+
+            if (v && populate_vma_page(cur, v, src_va) == 0)
+                src_pa = lookup_user_pa(pgd_va, src_va);
+        }
         if (!src_pa) return -1;
 
         page_off = src_va & (PAGE_SIZE - 1);
@@ -311,6 +333,7 @@ int copy_to_user_pgd(unsigned long *pgd_va, void *dst_user,
                      const void *src, unsigned long len){
     const unsigned char *src_bytes = (const unsigned char *)src;
     unsigned long dst_va = (unsigned long)dst_user;
+    struct task_struct *cur = get_current();
 
     if (!pgd_va) return -1;
 
@@ -319,6 +342,12 @@ int copy_to_user_pgd(unsigned long *pgd_va, void *dst_user,
         unsigned long page_off;
         unsigned long chunk;
 
+        if (!dst_pa && cur && cur->pgd == pgd_va) {
+            struct vma *v = find_vma(cur, dst_va);
+
+            if (v && populate_vma_page(cur, v, dst_va) == 0)
+                dst_pa = lookup_user_pa(pgd_va, dst_va);
+        }
         if (!dst_pa) return -1;
 
         page_off = dst_va & (PAGE_SIZE - 1);
@@ -350,5 +379,31 @@ int copy_string_from_user_pgd(unsigned long *pgd_va, char *dst,
     }
 
     dst[max_len - 1] = '\0';
+    return -1;
+}
+
+int handle_user_page_fault(struct pt_regs *regs){
+    
+    struct task_struct *cur = get_current();
+    
+    if(!cur || !cur->pgd) return -1;
+
+    unsigned long addr = regs->stval;
+    unsigned long page_va = PAGE_ALIGN_DOWN(addr);
+    struct vma *v = find_vma(cur, addr);
+
+    if(!v) return -1;
+
+    unsigned long *pte = walk_user_pte(cur->pgd, page_va);
+    if(!pte || !(*pte & PTE_V)){
+        if(populate_vma_page(cur, v, addr) < 0) return -1;
+
+        uart_puts("[Translation fault]: ");
+        uart_hex(addr);
+        uart_puts("\n");
+
+        return 0;
+    }
+
     return -1;
 }

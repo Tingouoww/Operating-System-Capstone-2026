@@ -17,6 +17,14 @@
 extern int nr_threads; // Thread Counter
 extern struct task_struct* run_queue;
 
+enum vma_type {
+    VMA_ANONYMOUS = 0,
+    VMA_TEXT,
+    VMA_STACK,
+    VMA_SIGNAL_STACK,
+    VMA_TRAMPOLINE,
+};
+
 struct vma{ // virtual memory area
     unsigned long start;
     unsigned long end;
@@ -24,6 +32,10 @@ struct vma{ // virtual memory area
     int prot; // READ, WRITE, EXEC
     int flags; // ANONYMOUS, POPULATE
     int used;
+
+    int type;
+    unsigned long src;
+    unsigned long src_len;
 };
 
 struct task_struct {
