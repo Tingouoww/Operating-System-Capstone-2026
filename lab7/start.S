@@ -1,0 +1,185 @@
+.section ".text.boot"
+.global _start
+_start:
+    mv s0, a0                  # 保存 hartid
+    mv s1, a1                  # 保存 dtb PA
+
+    la a3, __bss_start
+    la a4, __bss_stop
+    ble a4, a3, clear_bss_done
+clear_bss:
+    sd zero, (a3)
+    add a3, a3, 8
+    blt a3, a4, clear_bss
+clear_bss_done:
+    la sp, _end                # 暫時 stack（PA）
+    call setup_vm              # 開 MMU，identity + higher-half 都 active
+
+    la t0, .high               # 拿到 PA of .high
+    li t1, 0xffffffc000000000  # VA - PA offset
+    add t0, t0, t1             # VA of .high
+    jr t0                      # 跳到虛擬位址
+
+.high:
+    la sp, _end                # 重設 stack（現在 la 給 VA）
+    csrw sscratch, zero        # 標記目前在 kernel mode
+    la a2, handle_exception
+    csrw stvec, a2
+    call drop_identity_map     # 清掉 identity mapping
+
+    mv a0, s0                  # 還原 hartid
+    li t0, 0xffffffc000000000
+    add a1, s1, t0             # dtb VA = dtb PA + PAGE_OFFSET
+    tail start_kernel
+
+.global handle_exception
+.align 2
+handle_exception:
+    /*
+     * Retrieve kernel sp from sscratch and
+     * save user sp to sscratch
+     */
+    csrrw sp, sscratch, sp
+    bnez sp, save_context
+
+    csrr sp, sscratch
+save_context:
+    /* Save context */
+    addi sp, sp, -8 * 35
+    sd ra,  8 *  0(sp)
+    sd gp,  8 *  2(sp)
+    sd tp,  8 *  3(sp)
+    sd t0,  8 *  4(sp)
+    sd t1,  8 *  5(sp)
+    sd t2,  8 *  6(sp)
+    sd s0,  8 *  7(sp)
+    sd s1,  8 *  8(sp)
+    sd a0,  8 *  9(sp)
+    sd a1,  8 * 10(sp)
+    sd a2,  8 * 11(sp)
+    sd a3,  8 * 12(sp)
+    sd a4,  8 * 13(sp)
+    sd a5,  8 * 14(sp)
+    sd a6,  8 * 15(sp)
+    sd a7,  8 * 16(sp)
+    sd s2,  8 * 17(sp)
+    sd s3,  8 * 18(sp)
+    sd s4,  8 * 19(sp)
+    sd s5,  8 * 20(sp)
+    sd s6,  8 * 21(sp)
+    sd s7,  8 * 22(sp)
+    sd s8,  8 * 23(sp)
+    sd s9,  8 * 24(sp)
+    sd s10, 8 * 25(sp)
+    sd s11, 8 * 26(sp)
+    sd t3,  8 * 27(sp)
+    sd t4,  8 * 28(sp)
+    sd t5,  8 * 29(sp)
+    sd t6,  8 * 30(sp)
+    csrr s0, sscratch
+    csrr s1, sepc
+    csrr s2, sstatus
+    csrr s3, scause
+    csrr s4, stval
+    sd s0,  8 *  1(sp)
+    sd s1,  8 * 31(sp)
+    sd s2,  8 * 32(sp)
+    sd s3,  8 * 33(sp)
+    sd s4,  8 * 34(sp)
+
+    csrw sscratch, zero
+    move a0, sp
+    call do_trap
+
+.global ret_from_exception
+ret_from_exception:
+    ld s0,  8 * 32(sp) // 取出先前保存的 sstatus
+    andi s0, s0, (1 << 8) // SPP (0 -> U-Mode, 1 -> S-mode)
+    bnez s0, 1f
+
+    addi s0, sp, 8 * 35 // 要回 U-mode 要更新 sscratch (trap frame 頂端)
+    csrw sscratch, s0 // 回到 user 前，先把 kernel stack 的可用位置放進 sscratch
+1:
+    /* Restore context */
+    ld s1,  8 * 31(sp)
+    ld s2,  8 * 32(sp)
+    csrw sepc, s1
+    csrw sstatus, s2
+    ld ra,  8 *  0(sp)
+    ld gp,  8 *  2(sp)
+    ld tp,  8 *  3(sp)
+    ld t0,  8 *  4(sp)
+    ld t1,  8 *  5(sp)
+    ld t2,  8 *  6(sp)
+    ld s0,  8 *  7(sp)
+    ld s1,  8 *  8(sp)
+    ld a0,  8 *  9(sp)
+    ld a1,  8 * 10(sp)
+    ld a2,  8 * 11(sp)
+    ld a3,  8 * 12(sp)
+    ld a4,  8 * 13(sp)
+    ld a5,  8 * 14(sp)
+    ld a6,  8 * 15(sp)
+    ld a7,  8 * 16(sp)
+    ld s2,  8 * 17(sp)
+    ld s3,  8 * 18(sp)
+    ld s4,  8 * 19(sp)
+    ld s5,  8 * 20(sp)
+    ld s6,  8 * 21(sp)
+    ld s7,  8 * 22(sp)
+    ld s8,  8 * 23(sp)
+    ld s9,  8 * 24(sp)
+    ld s10, 8 * 25(sp)
+    ld s11, 8 * 26(sp)
+    ld t3,  8 * 27(sp)
+    ld t4,  8 * 28(sp)
+    ld t5,  8 * 29(sp)
+    ld t6,  8 * 30(sp)
+    ld sp,  8 *  1(sp)
+    sret
+
+// 新建立的 user process 第一次被排程時，switch_to 的 ra 指向這裡。
+// 此時 sp 已指向 kernel stack 上預先建好的假 pt_regs frame，
+// 直接落入 ret_from_exception，讓它設好 sscratch 後 sret 回 U-mode。
+.global ret_to_user_trampoline
+ret_to_user_trampoline:
+    j ret_from_exception
+
+// switch_to 的 C function 參數是 prev / next
+.global switch_to
+switch_to:
+    /* Save Context */
+    // 把目前 task 的必要 reg 存到 prev
+    sd ra, 0(a0) // 存返回位址 ( &prev->thread.ra )
+    sd sp, 8(a0) // 存目前 stack pointer
+    sd s0, 16(a0)
+    sd s1, 24(a0)
+    sd s2, 32(a0)
+    sd s3, 40(a0)
+    sd s4, 48(a0)
+    sd s5, 56(a0)
+    sd s6, 64(a0)
+    sd s7, 72(a0)
+    sd s8, 80(a0)
+    sd s9, 88(a0)
+    sd s10, 96(a0)
+    sd s11, 104(a0)
+
+    /* Restore Context */
+    // 從 next 載入下一個 task 的上下文
+    ld ra, 0(a1) // next->thread.ra
+    ld sp, 8(a1)
+    ld s0, 16(a1)
+    ld s1, 24(a1)
+    ld s2, 32(a1)
+    ld s3, 40(a1)
+    ld s4, 48(a1)
+    ld s5, 56(a1)
+    ld s6, 64(a1)
+    ld s7, 72(a1)
+    ld s8, 80(a1)
+    ld s9, 88(a1)
+    ld s10, 96(a1)
+    ld s11, 104(a1)
+    mv tp, a1
+    ret // 跳到 ra 指向的位置
