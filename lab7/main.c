@@ -12,6 +12,62 @@
 #include "syscall.h"
 #include "video.h"
 #include "mmap.h"
+#include "vfs.h"
+#include "tmpfs.h"
+
+static void init_rootfs(void) {
+    struct filesystem* tmpfs = tmpfs_get_filesystem();
+
+    if (register_filesystem(tmpfs) != 0) {
+        uart_puts("[vfs] failed to register tmpfs\n");
+        while (1);
+    }
+
+    if (vfs_mount("/", "tmpfs") != 0) {
+        uart_puts("[vfs] failed to mount rootfs\n");
+        while (1);
+    }
+}
+
+static void vfs_basic1_smoke_test(void) {
+    struct file* file = NULL;
+    char buf[16] = {0};
+
+    if (vfs_open("hello.txt", O_CREAT, &file) != 0) {
+        uart_puts("[vfs] open(create) failed\n");
+        while (1);
+    }
+    if (vfs_write(file, "hello", 5) != 5) {
+        uart_puts("[vfs] write failed\n");
+        while (1);
+    }
+    if (vfs_close(file) != 0) {
+        uart_puts("[vfs] close after write failed\n");
+        while (1);
+    }
+
+    if (vfs_open("hello.txt", 0, &file) != 0) {
+        uart_puts("[vfs] open(read) failed\n");
+        while (1);
+    }
+    if (vfs_read(file, buf, 5) != 5) {
+        uart_puts("[vfs] read failed\n");
+        while (1);
+    }
+    if (vfs_close(file) != 0) {
+        uart_puts("[vfs] close after read failed\n");
+        while (1);
+    }
+
+    if (str_cmp(buf, "hello") != 0) {
+        uart_puts("[vfs] verify failed\n");
+        while (1);
+    }
+
+    uart_puts("[vfs] basic exercise 1 smoke test passed: ");
+    uart_puts(buf);
+    uart_puts("\n");
+}
 
 static void shell_thread(void) {
     char buf[128];
@@ -113,6 +169,8 @@ void start_kernel(unsigned long hartid, void *dtb) {
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
     mem_allocator_init(dtb);
+    init_rootfs();
+    vfs_basic1_smoke_test();
     signal_init();
     video_init(dtb);
     shell_init(dtb);
