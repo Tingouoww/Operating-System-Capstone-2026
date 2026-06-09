@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+#define CPIO_MODE_TYPE_MASK 0170000
+#define CPIO_MODE_REG       0100000
+#define CPIO_MODE_DIR       0040000
+
 struct cpio_newc_header
 {
     // 8-byte hexadecimal fields
@@ -22,10 +26,20 @@ struct cpio_newc_header
     char c_check[8];
 };
 
+struct cpio_entry {
+    const char *name;
+    const void *data;
+    unsigned long size;
+    unsigned int mode;
+};
+
+typedef int (*cpio_iter_fn)(const struct cpio_entry *entry, void *arg);
+
 void initrd_init(void *start, void *end);
 void initrd_list(const void *rd);
 void initrd_cat(const void *rd, const char *filename);
 unsigned long cpio_find_exec(const char *filename);
 unsigned long cpio_find_exec_size(const char *filename);
+int cpio_iterate(cpio_iter_fn fn, void *arg);
 
 #endif

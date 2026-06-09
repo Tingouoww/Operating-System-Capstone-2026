@@ -14,7 +14,7 @@ LDFLAGS = -T $(LINKER_SCRIPT)
 QEMU ?= qemu-system-riscv64
 TARGET = kernel
 FIT = kernel.fit
-SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/utils.c src/mem_allocator.c src/mem_allocator_test.c src/timer.c src/task.c src/syscall.c src/video.c src/signal.c src/vm.c src/mmap.c src/vfs.c src/tmpfs.c
+SRCS = start.S main.c src/bootloader.c src/cpio.c src/fdt.c src/sbi.c src/uart.c src/shell.c src/utils.c src/mem_allocator.c src/mem_allocator_test.c src/timer.c src/task.c src/syscall.c src/video.c src/signal.c src/vm.c src/mmap.c src/vfs.c src/tmpfs.c src/ramfs.c
 OBJS = $(notdir $(SRCS:.c=.o))
 OBJS := $(notdir $(OBJS:.S=.o))
 

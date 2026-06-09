@@ -14,17 +14,45 @@
 #include "mmap.h"
 #include "vfs.h"
 #include "tmpfs.h"
+#include "ramfs.h"
+
+static void vfs_fail(const char* msg);
+
+static void init_initrd(const void *dtb) {
+    unsigned long initrd_start = 0;
+    unsigned long initrd_end = 0;
+
+    if (fdt_get_initrd_range(dtb, &initrd_start, &initrd_end) < 0)
+        vfs_fail("[initrd] failed to get initrd range\n");
+    if (initrd_start == 0 || initrd_end <= initrd_start)
+        vfs_fail("[initrd] initrd range not found\n");
+
+    initrd_init((void *)PA_TO_VA(initrd_start), (void *)PA_TO_VA(initrd_end));
+}
 
 static void init_rootfs(void) {
     struct filesystem* tmpfs = tmpfs_get_filesystem();
+    struct filesystem* ramfs = ramfs_get_filesystem();
 
     if (register_filesystem(tmpfs) != 0) {
         uart_puts("[vfs] failed to register tmpfs\n");
         while (1);
     }
+    if (register_filesystem(ramfs) != 0) {
+        uart_puts("[vfs] failed to register ramfs\n");
+        while (1);
+    }
 
     if (vfs_mount("/", "tmpfs") != 0) {
         uart_puts("[vfs] failed to mount rootfs\n");
+        while (1);
+    }
+    if (vfs_mkdir("/ramfs") != 0) {
+        uart_puts("[vfs] failed to create /ramfs\n");
+        while (1);
+    }
+    if (vfs_mount("/ramfs", "ramfs") != 0) {
+        uart_puts("[vfs] failed to mount /ramfs\n");
         while (1);
     }
 }
@@ -129,6 +157,32 @@ static void vfs_basic2_smoke_test(void) {
         vfs_fail("[vfs] mount on missing path should fail\n");
 
     uart_puts("[vfs] basic exercise 2 smoke test passed\n");
+}
+
+static void vfs_basic4_smoke_test(void) {
+    struct file* file = NULL;
+    struct vnode* vnode = NULL;
+    char buf[8] = {0};
+
+    if (vfs_lookup("/ramfs", &vnode) != 0 || vnode == NULL || !vfs_is_dir(vnode))
+        vfs_fail("[vfs] lookup /ramfs failed\n");
+    if (vfs_open("/ramfs/osctest.bin", 0, &file) != 0)
+        vfs_fail("[vfs] open /ramfs/osctest.bin failed\n");
+    if (vfs_read(file, buf, sizeof(buf)) <= 0)
+        vfs_fail("[vfs] read /ramfs/osctest.bin failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close /ramfs/osctest.bin failed\n");
+
+    if (vfs_open("/ramfs/nope", 0, &file) == 0)
+        vfs_fail("[vfs] missing ramfs file should fail\n");
+    if (vfs_mkdir("/ramfs/x") == 0)
+        vfs_fail("[vfs] mkdir on ramfs should fail\n");
+    if (vfs_mount("/ramfs/osctest.bin", "tmpfs") == 0)
+        vfs_fail("[vfs] mount on ramfs file should fail\n");
+    if (vfs_open("/ramfs/created.txt", O_CREAT, &file) == 0)
+        vfs_fail("[vfs] create on ramfs should fail\n");
+
+    uart_puts("[vfs] basic exercise 4 smoke test passed\n");
 }
 
 static void shell_thread(void) {
@@ -245,9 +299,11 @@ void start_kernel(unsigned long hartid, void *dtb) {
     uart_init(dtb);
     uart_puts("\nStarting kernel ...\n");
     mem_allocator_init(dtb);
+    init_initrd(dtb);
     init_rootfs();
     vfs_basic1_smoke_test();
     vfs_basic2_smoke_test();
+    vfs_basic4_smoke_test();
     signal_init();
     video_init(dtb);
     shell_init(dtb);

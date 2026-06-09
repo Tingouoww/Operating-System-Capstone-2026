@@ -42,6 +42,40 @@ static int align(int n, int byte)
     return (n + byte - 1) & ~(byte - 1);
 }
 
+static int cpio_iterate_from(const void *rd, cpio_iter_fn fn, void *arg)
+{
+    struct cpio_newc_header *cpio = NULL;
+
+    if (rd == NULL || fn == NULL)
+        return -1;
+
+    cpio = (struct cpio_newc_header *)rd;
+    while ((const void *)cpio < initrd_end && str_ncmp(cpio->c_magic, "070701", 6) == 0) {
+        int filesize = hextoi(cpio->c_filesize, sizeof(cpio->c_filesize));
+        int namesize = hextoi(cpio->c_namesize, sizeof(cpio->c_namesize));
+        int mode = hextoi(cpio->c_mode, sizeof(cpio->c_mode));
+        const char *name = (const char *)(cpio + 1);
+        const char *base = (const char *)cpio;
+        int data_offset = align((int)((name - base) + namesize), 4);
+        struct cpio_entry entry;
+        int ret = 0;
+
+        if (str_cmp(name, "TRAILER!!!") == 0)
+            break;
+
+        entry.name = name;
+        entry.data = base + data_offset;
+        entry.size = (unsigned long)filesize;
+        entry.mode = (unsigned int)mode;
+        ret = fn(&entry, arg);
+        if (ret != 0)
+            return ret;
+
+        cpio = (struct cpio_newc_header *)(base + data_offset + align(filesize, 4));
+    }
+    return 0;
+}
+
 static void uart_put_uint(unsigned int value)
 {
     char buf[16];
@@ -124,6 +158,13 @@ void initrd_list(const void *rd)
         cpio = (struct cpio_newc_header *)(base + align((int)((name - base) + namesize), 4) +
                                            align(filesize, 4));
     }
+}
+
+int cpio_iterate(cpio_iter_fn fn, void *arg)
+{
+    if (!initrd_start)
+        return -1;
+    return cpio_iterate_from(initrd_start, fn, arg);
 }
 
 unsigned long cpio_find_exec(const char *filename)
