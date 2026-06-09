@@ -5,6 +5,7 @@
 #include "cpio.h"
 #include "vm.h"
 #include "mmap.h"
+#include "vfs.h"
 
 #define MAX_TASKS 64
 
@@ -28,6 +29,75 @@ struct task_struct* get_current() {
 }
 
 extern void switch_to(struct task_struct* prev, struct task_struct* next);
+
+void task_init_fs_context(struct task_struct *task) {
+    if (task == NULL)
+        return;
+
+    task->root_dir = (rootfs != NULL) ? rootfs->root : NULL;
+    task->cwd = task->root_dir;
+    for (int i = 0; i < TASK_MAX_FD; i++)
+        task->fd_table[i] = NULL;
+}
+
+void task_clone_fs_context(struct task_struct *dst,
+                           const struct task_struct *src) {
+    if (dst == NULL || src == NULL)
+        return;
+
+    dst->root_dir = src->root_dir;
+    dst->cwd = src->cwd;
+    for (int i = 0; i < TASK_MAX_FD; i++) {
+        dst->fd_table[i] = src->fd_table[i];
+        if (dst->fd_table[i] != NULL)
+            vfs_file_retain(dst->fd_table[i]);
+    }
+}
+
+int task_install_file(struct task_struct *task, struct file *file) {
+    if (task == NULL || file == NULL)
+        return -1;
+
+    for (int i = 0; i < TASK_MAX_FD; i++) {
+        if (task->fd_table[i] == NULL) {
+            task->fd_table[i] = file;
+            return i;
+        }
+    }
+    return -1;
+}
+
+struct file *task_get_file(struct task_struct *task, int fd) {
+    if (task == NULL || fd < 0 || fd >= TASK_MAX_FD)
+        return NULL;
+    return task->fd_table[fd];
+}
+
+int task_close_fd(struct task_struct *task, int fd) {
+    struct file *file = NULL;
+
+    if (task == NULL || fd < 0 || fd >= TASK_MAX_FD)
+        return -1;
+
+    file = task->fd_table[fd];
+    if (file == NULL)
+        return -1;
+
+    task->fd_table[fd] = NULL;
+    return vfs_file_release(file);
+}
+
+void task_release_fs_context(struct task_struct *task) {
+    if (task == NULL)
+        return;
+
+    for (int i = 0; i < TASK_MAX_FD; i++) {
+        if (task->fd_table[i] != NULL)
+            (void)task_close_fd(task, i);
+    }
+    task->cwd = NULL;
+    task->root_dir = NULL;
+}
 
 /* 切換記憶體位址空間 */
 static void switch_mm(struct task_struct *next) {
@@ -64,21 +134,22 @@ void schedule() {
 }
 
 void idle_init(void){
-    struct task_struct *idle_task = 
+    struct task_struct *idle_task =
         (struct task_struct *) allocate(sizeof(struct task_struct));
     memset(idle_task, 0, sizeof(*idle_task)); // 先把整個結構清成 0，避免欄位有亂值
     idle_task->pid = nr_threads++;
     idle_task->state = RUNNING_THREAD;
     idle_task->next = idle_task; // 初始化只有一個 node 的環狀 linked list
-    idle_task->parent_pid = -1; 
+    idle_task->parent_pid = -1;
     idle_task->wait_for_pid = -1;
+    task_init_fs_context(idle_task);
     run_queue = idle_task;
     
-    /* 
+    /*
     把 idle_task 的位址放進 RISC-V 的 tp 暫存器
     get_current() 會直接從 tp 取出目前 task
     */
-    asm volatile("mv tp, %0" :: "r"(idle_task) : "memory"); 
+    asm volatile("mv tp, %0" :: "r"(idle_task) : "memory");
 }
 
 void idle() {
@@ -114,6 +185,7 @@ void kill_zombies(){
             }
             if (!parent_waiting) {
                 prev->next = next;
+                task_release_fs_context(cur);
                 if (cur->pgd) { free_user_pgd(cur->pgd); cur->pgd = NULL; }
                 buddy_free((void *)cur->stack);
                 free(cur);
@@ -130,12 +202,12 @@ void kill_zombies(){
 }
 
 struct task_struct* thread_create(void (*threadfn)())
-{ 
+{
     struct task_struct* t = (struct task_struct*) allocate(sizeof(struct task_struct));
-    if (!t) return NULL;
-
     unsigned long stack_base;
     unsigned long stack_top;
+
+    if (!t) return NULL;
 
     stack_base = (unsigned long) buddy_alloc(0); // 配置一頁 kernel stack
     if(!stack_base){
@@ -155,6 +227,7 @@ struct task_struct* thread_create(void (*threadfn)())
     t->wait_for_pid = -1;
     t->thread.sp = stack_top;
     t->thread.ra = (unsigned long)threadfn;
+    task_init_fs_context(t);
     t->next = run_queue->next; // 插入 run_queue 後面 (緊接在 idle 後面)
     run_queue->next = t;
 
@@ -162,8 +235,9 @@ struct task_struct* thread_create(void (*threadfn)())
 };
 
 void thread_exit(){
+    task_release_fs_context(get_current());
     get_current()->state = ZOMBIE_THREAD; // 把目前的 thread 標成 zombie 等待清理
-    schedule(); 
+    schedule();
 }
 
 /* --------- task ---------- */
@@ -244,22 +318,28 @@ void run_tasks(void){
 int user_exec(const char *filename) {
     unsigned long code_va = cpio_find_exec(filename);
     unsigned long code_size = cpio_find_exec_size(filename);
+    unsigned long kstack = 0;
+    unsigned long kernel_sp = 0;
+    unsigned long *proc_pgd = NULL;
+    struct task_struct *t = NULL;
+    struct pt_regs *regs = NULL;
+
     if(!code_va || !code_size) return -1;
 
     // 只配置 kernel stack 與 PGD，user pages 由 fault handler 按需補齊
-    unsigned long kstack = (unsigned long)buddy_alloc(0);
-    unsigned long *proc_pgd = alloc_user_pgd();
+    kstack = (unsigned long)buddy_alloc(0);
+    proc_pgd = alloc_user_pgd();
     if(!kstack || !proc_pgd) {
         if (kstack)   buddy_free((void *)kstack);
         if (proc_pgd) free_user_pgd(proc_pgd);
         return -1;
     }
 
-    unsigned long kernel_sp = kstack + PAGE_SIZE; // 由頂端往下
+    kernel_sp = kstack + PAGE_SIZE; // 由頂端往下
     // 在 kernel stack 頂端建立 fake trap frame
     // 新建立的 process 沒有真的發生過 trap/syscall/interrupt
     // kernel stack 上面不存在 trap frame
-    struct pt_regs *regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE); // 挪出空間給 pt_regs 使用, regs -> trap frame 起始位址
+    regs = (struct pt_regs *)(kernel_sp - TRAP_FRAME_SIZE); // 挪出空間給 pt_regs 使用, regs -> trap frame 起始位址
     memset(regs, 0, TRAP_FRAME_SIZE);
     regs->sepc    = USER_CODE_VA;
     regs->sp      = USER_STACK_VA + PAGE_SIZE;
@@ -267,7 +347,7 @@ int user_exec(const char *filename) {
     regs->sstatus = (1UL << 5);  // SPIE=1, SPP=0
 
     // 分配並初始化 task_struct
-    struct task_struct *t = allocate(sizeof(*t));
+    t = allocate(sizeof(*t));
     if (!t) {
         buddy_free((void *)kstack);
         free_user_pgd(proc_pgd);
@@ -290,6 +370,7 @@ int user_exec(const char *filename) {
     t->pgd         = proc_pgd;
     t->parent_pid  = get_current()->pid;
     t->wait_for_pid = -1;
+    task_init_fs_context(t);
 
     regs->tp      = (unsigned long)t;
     /* 對新建的 user process 來說它以前從來沒有真的跑過，

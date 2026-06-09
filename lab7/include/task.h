@@ -5,6 +5,7 @@
 #include "signal.h"
 
 #define TRAP_FRAME_SIZE (35 * 8)  // 280 bytes
+#define TASK_MAX_FD 16
 // THREAD STATE
 #define READY_THREAD 0
 #define RUNNING_THREAD 1
@@ -38,6 +39,9 @@ struct vma{ // virtual memory area
     unsigned long src_len; // VMA_TEXT: 程式碼長度
 };
 
+struct vnode;
+struct file;
+
 struct task_struct {
     struct thread_struct {
         unsigned long ra; // function callback address
@@ -56,6 +60,9 @@ struct task_struct {
     int wait_for_pid; // 正在等待哪個 child pid（-1 = 沒有等待）
     int exit_status;  // 子行程結束時把結果交給父行程 (但目前其實沒用到, spec 說lab不用)
     struct task_struct *next; // schedule use
+    struct vnode *root_dir;
+    struct vnode *cwd;
+    struct file *fd_table[TASK_MAX_FD];
 
     // ---- POSIX ----
     void (*signal_handler[MAX_SIGNALS])(int); // 函式指標陣列 (total 32 欄位)
@@ -81,5 +88,12 @@ void schedule(void);
 
 struct task_struct *find_task_by_pid(int pid);
 int user_exec(const char *filename); // 建立 user process task，回傳 pid 或 -1
+void task_init_fs_context(struct task_struct *task);
+void task_clone_fs_context(struct task_struct *dst,
+                           const struct task_struct *src);
+void task_release_fs_context(struct task_struct *task);
+int task_install_file(struct task_struct *task, struct file *file);
+struct file *task_get_file(struct task_struct *task, int fd);
+int task_close_fd(struct task_struct *task, int fd);
 
 #endif

@@ -22,5 +22,13 @@ void  sys_display(const unsigned int *bmp_image,
                   unsigned int width,
                   unsigned int height); // 8
 int   sys_usleep(unsigned int usec); // 9
+int   sys_open(const char *pathname, int flags); // 14
+int   sys_close(int fd); // 15
+long  sys_read(int fd, void *buf, unsigned long count); // 16
+long  sys_write(int fd, const void *buf, unsigned long count); // 17
+int   sys_mkdir(const char *pathname, unsigned mode); // 18
+int   sys_mount(const char *src, const char *target, const char *filesystem,
+                unsigned long flags, const void *data); // 19
+int   sys_chdir(const char *path); // 20
 
 #endif

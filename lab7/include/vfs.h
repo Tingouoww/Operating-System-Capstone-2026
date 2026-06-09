@@ -6,6 +6,8 @@
 
 struct vnode {
   struct mount* mount;
+  struct mount* owner;
+  struct vnode* parent;
   struct vnode_operations* v_ops;
   struct file_operations* f_ops;
   void* internal;
@@ -17,11 +19,13 @@ struct file {
   size_t f_pos;  // 此檔案句柄的讀寫位置 offset
   struct file_operations* f_ops; // 透過這張表呼叫對應檔案系統的實作
   int flags; // open 時帶進來的旗標
+  int ref_count;
 };
 
 /* 表示已掛載的 file system */
 struct mount {
   struct vnode* root;
+  struct vnode* mount_point;
   struct filesystem* fs;
 };
 
@@ -57,5 +61,16 @@ int vfs_read  (struct file* file, void* buf, size_t len);
 int vfs_mkdir (const char* pathname);
 int vfs_mount (const char* target, const char* filesystem);
 int vfs_lookup(const char* pathname, struct vnode** target);
+int vfs_open_from(struct vnode* root_dir, struct vnode* cwd,
+                  const char* pathname, int flags, struct file** target);
+int vfs_mkdir_from(struct vnode* root_dir, struct vnode* cwd,
+                   const char* pathname);
+int vfs_mount_from(struct vnode* root_dir, struct vnode* cwd,
+                   const char* target, const char* filesystem);
+int vfs_lookup_from(struct vnode* root_dir, struct vnode* cwd,
+                    const char* pathname, struct vnode** target);
+int vfs_is_dir(struct vnode* vnode);
+void vfs_file_retain(struct file* file);
+int vfs_file_release(struct file* file);
 
 #endif

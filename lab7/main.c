@@ -29,44 +29,106 @@ static void init_rootfs(void) {
     }
 }
 
+static void vfs_fail(const char* msg) {
+    uart_puts(msg);
+    while (1);
+}
+
 static void vfs_basic1_smoke_test(void) {
     struct file* file = NULL;
     char buf[16] = {0};
 
-    if (vfs_open("hello.txt", O_CREAT, &file) != 0) {
-        uart_puts("[vfs] open(create) failed\n");
-        while (1);
-    }
-    if (vfs_write(file, "hello", 5) != 5) {
-        uart_puts("[vfs] write failed\n");
-        while (1);
-    }
-    if (vfs_close(file) != 0) {
-        uart_puts("[vfs] close after write failed\n");
-        while (1);
-    }
+    if (vfs_open("/hello.txt", O_CREAT, &file) != 0)
+        vfs_fail("[vfs] open(create) failed\n");
+    if (vfs_write(file, "hello", 5) != 5)
+        vfs_fail("[vfs] write failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close after write failed\n");
 
-    if (vfs_open("hello.txt", 0, &file) != 0) {
-        uart_puts("[vfs] open(read) failed\n");
-        while (1);
-    }
-    if (vfs_read(file, buf, 5) != 5) {
-        uart_puts("[vfs] read failed\n");
-        while (1);
-    }
-    if (vfs_close(file) != 0) {
-        uart_puts("[vfs] close after read failed\n");
-        while (1);
-    }
+    if (vfs_open("/hello.txt", 0, &file) != 0)
+        vfs_fail("[vfs] open(read) failed\n");
+    if (vfs_read(file, buf, 5) != 5)
+        vfs_fail("[vfs] read failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close after read failed\n");
 
-    if (str_cmp(buf, "hello") != 0) {
-        uart_puts("[vfs] verify failed\n");
-        while (1);
-    }
+    if (str_cmp(buf, "hello") != 0)
+        vfs_fail("[vfs] verify failed\n");
 
     uart_puts("[vfs] basic exercise 1 smoke test passed: ");
     uart_puts(buf);
     uart_puts("\n");
+}
+
+static void vfs_basic2_smoke_test(void) {
+    struct file* file = NULL;
+    struct vnode* vnode = NULL;
+    char buf[16] = {0};
+
+    if (vfs_mkdir("/dir") != 0)
+        vfs_fail("[vfs] mkdir /dir failed\n");
+    if (vfs_mkdir("/dir/sub") != 0)
+        vfs_fail("[vfs] mkdir /dir/sub failed\n");
+    if (vfs_mkdir("/dir") == 0)
+        vfs_fail("[vfs] duplicate mkdir should fail\n");
+
+    if (vfs_open("/dir/sub/note.txt", O_CREAT, &file) != 0)
+        vfs_fail("[vfs] create nested file failed\n");
+    if (vfs_write(file, "basic2", 6) != 6)
+        vfs_fail("[vfs] write nested file failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close nested file failed\n");
+
+    if (vfs_lookup("/dir/sub/note.txt", &vnode) != 0 || vnode == NULL)
+        vfs_fail("[vfs] multi-level lookup failed\n");
+    if (vfs_open("/dir/sub/note.txt", 0, &file) != 0)
+        vfs_fail("[vfs] reopen nested file failed\n");
+    if (vfs_read(file, buf, 6) != 6)
+        vfs_fail("[vfs] read nested file failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close nested read failed\n");
+    if (str_cmp(buf, "basic2") != 0)
+        vfs_fail("[vfs] nested content verify failed\n");
+
+    if (vfs_mkdir("/mnt") != 0)
+        vfs_fail("[vfs] mkdir /mnt failed\n");
+    if (vfs_open("/mnt/hidden.txt", O_CREAT, &file) != 0)
+        vfs_fail("[vfs] create pre-mount file failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close pre-mount file failed\n");
+
+    if (vfs_mount("/mnt", "tmpfs") != 0)
+        vfs_fail("[vfs] mount /mnt failed\n");
+    if (vfs_lookup("/mnt", &vnode) != 0 || vnode == NULL)
+        vfs_fail("[vfs] lookup mounted root failed\n");
+    if (vfs_mount("/mnt", "tmpfs") == 0)
+        vfs_fail("[vfs] duplicate mount should fail\n");
+    if (vfs_open("/mnt/hidden.txt", 0, &file) == 0)
+        vfs_fail("[vfs] covered file should not be visible after mount\n");
+
+    if (vfs_open("/mnt/visible.txt", O_CREAT, &file) != 0)
+        vfs_fail("[vfs] create mounted file failed\n");
+    if (vfs_write(file, "mount", 5) != 5)
+        vfs_fail("[vfs] write mounted file failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close mounted file failed\n");
+
+    memset(buf, 0, sizeof(buf));
+    if (vfs_open("/mnt/visible.txt", 0, &file) != 0)
+        vfs_fail("[vfs] reopen mounted file failed\n");
+    if (vfs_read(file, buf, 5) != 5)
+        vfs_fail("[vfs] read mounted file failed\n");
+    if (vfs_close(file) != 0)
+        vfs_fail("[vfs] close mounted read failed\n");
+    if (str_cmp(buf, "mount") != 0)
+        vfs_fail("[vfs] mounted content verify failed\n");
+
+    if (vfs_mount("/hello.txt", "tmpfs") == 0)
+        vfs_fail("[vfs] mount on file should fail\n");
+    if (vfs_mount("/nope", "tmpfs") == 0)
+        vfs_fail("[vfs] mount on missing path should fail\n");
+
+    uart_puts("[vfs] basic exercise 2 smoke test passed\n");
 }
 
 static void shell_thread(void) {
@@ -136,6 +198,20 @@ void do_trap(struct pt_regs *regs) {
             case 12: regs->a0 = sys_kill((int)regs->a0, (int)regs->a1); break;
             case 13: regs->a0 = sys_mmap((unsigned long)regs->a0, (unsigned long)regs->a1,
                                 (int)regs->a2, (int)regs->a3); break;
+            case 14: regs->a0 = sys_open((const char *)regs->a0, (int)regs->a1); break;
+            case 15: regs->a0 = sys_close((int)regs->a0); break;
+            case 16: regs->a0 = sys_read((int)regs->a0, (void *)regs->a1,
+                                         (unsigned long)regs->a2); break;
+            case 17: regs->a0 = sys_write((int)regs->a0, (const void *)regs->a1,
+                                          (unsigned long)regs->a2); break;
+            case 18: regs->a0 = sys_mkdir((const char *)regs->a0,
+                                          (unsigned int)regs->a1); break;
+            case 19: regs->a0 = sys_mount((const char *)regs->a0,
+                                          (const char *)regs->a1,
+                                          (const char *)regs->a2,
+                                          (unsigned long)regs->a3,
+                                          (const void *)regs->a4); break;
+            case 20: regs->a0 = sys_chdir((const char *)regs->a0); break;
             default: regs->a0 = -1; break;
         }
 
@@ -171,6 +247,7 @@ void start_kernel(unsigned long hartid, void *dtb) {
     mem_allocator_init(dtb);
     init_rootfs();
     vfs_basic1_smoke_test();
+    vfs_basic2_smoke_test();
     signal_init();
     video_init(dtb);
     shell_init(dtb);
